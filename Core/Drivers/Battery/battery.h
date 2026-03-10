@@ -5,7 +5,7 @@
 
 /* ================= CONFIG ================= */
 
-#define ADC_BUFFER_LENGTH     128U      // phải chia hết cho 2
+#define ADC_BUFFER_LENGTH     512U      // phải chia hết cho 2
 #define ADC_FILTER_ALPHA      0.1f     // LPF hệ số
 #define ADC_CHANNEL_VBAT_HALF 0U
 #define ADC_CHANNEL_VBAT_FULL 1U
