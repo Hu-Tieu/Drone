@@ -1,22 +1,22 @@
-# build
+# ignore everything
+*
+
+# allow git config files
+!.gitignore
+
+# allow Core folder
+!Core/
+!Core/**
+
+# ignore cube backup
+Core/Src/Backup/
+Core/Inc/Backup/
+*.bak
+
+# ignore build
 Debug/
 Release/
 build/
 
-# gcc
-*.o
-*.d
-*.elf
-*.map
-
-# STM32 drivers
-Drivers/
-!Core/Drivers/
-TOF/
-X-CUBE-TOF1/
-# Cube backup
-Core/Src/Backup/
-*.bak
-
-# Others
+# ignore vscode
 .vscode/
