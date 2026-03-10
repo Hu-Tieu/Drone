@@ -1,0 +1,38 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "-j12",
+                "all",
+                "-s"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/Debug"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Flash",
+            "type": "shell",
+            "command": "STM32_Programmer_CLI",
+            "args": [
+                "-c", "port=SWD",
+                "-w", "${workspaceFolder}/Debug/Drone_Project.elf",
+                "-v",
+                "-rst"
+            ]
+        },
+        {
+            "label": "Build + Flash",
+            "dependsOn": ["Build", "Flash"],
+            "dependsOrder": "sequence"
+        }
+    ]
+}

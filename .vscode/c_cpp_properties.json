@@ -1,0 +1,30 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "STM32F446RE",
+      "compilerPath": "arm-none-eabi-gcc",
+      "intelliSenseMode": "gcc-arm",
+      "cStandard": "c11",
+
+      "defines": [
+        "STM32F446xx",
+        "USE_HAL_DRIVER",
+        "DEBUG"
+      ],
+
+      "includePath": [
+        "${workspaceFolder}/**",
+        "C:\\Users\\trinh\\Desktop\\Code\\STM32\\Drone_Project\\X-CUBE-TOF1\\Target\\"
+        ]
+        ,
+
+      "compilerArgs": [
+        "-mcpu=cortex-m4",
+        "-mthumb",
+        "-mfpu=fpv4-sp-d16",
+        "-mfloat-abi=hard"
+      ]
+    }
+  ]
+}

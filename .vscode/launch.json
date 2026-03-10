@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Flash Only",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/Debug/Drone_Project.elf",
+            "preLaunchTask": "Build + Flash",
+            "cwd": "${workspaceFolder}",
+            "externalConsole": false,
+            "stopAtEntry": false
+        }
+    ]
+}
