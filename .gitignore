@@ -1,22 +1,19 @@
 # ignore everything
 *
 
-# allow git config files
+# allow gitignore itself
 !.gitignore
 
-# allow Core folder
+# allow folders so git có thể đi vào
 !Core/
-!Core/**
+!Core/App/
+!Core/App/**
+!Core/Drivers/
+!Core/Drivers/**
 
-# ignore cube backup
-Core/Src/Backup/
-Core/Inc/Backup/
-*.bak
+# allow main
+!Core/Src/
+!Core/Src/main.c
 
-# ignore build
-Debug/
-Release/
-build/
-
-# ignore vscode
-.vscode/
+!Core/Inc/
+!Core/Inc/main.h
