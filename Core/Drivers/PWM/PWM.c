@@ -38,6 +38,7 @@ void PWM_Init(void)
 
     /* Start Encoder DMA (TIM5) */
     HAL_TIM_IC_Start_DMA(&htim5, TIM_CHANNEL_2, rpm_buffer, RPM_BUFFER_SIZE);
+
 }
 
 /* ================= RC COMMAND ================= */
@@ -87,7 +88,7 @@ static float RPM_Compute(uint32_t *buf, uint32_t length)
     float timer_freq = (float)TIM2_CLOCK / (TIM_PSC + 1.0f);
 
     return (timer_freq * 60.0f * (length - 1U)) /
-        (float)total_ticks;
+        ((float)total_ticks*2.0f); /* 2 pulses per revolution */
 }
 
 void Motor_RPM_Update_Half(float *rpm_out)

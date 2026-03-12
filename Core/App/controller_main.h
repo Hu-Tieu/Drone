@@ -16,9 +16,9 @@
 #define GRAVITY                 9.807f      // m/s^2
 
 /* ================= Inertia Matrix (kg·m^2) ================= */
-#define Jxx                     0.0142f     // Moment of inertia around X axis
-#define Jyy                     0.0142f     // Moment of inertia around Y axis
-#define Jzz                     0.0284f     // Moment of inertia around Z axis
+#define Jxx                     0.01438644f     // Moment of inertia around X axis
+#define Jyy                     0.01518077f     // Moment of inertia around Y axis
+#define Jzz                     0.02827181f     // Moment of inertia around Z axis
 
 /* ================= Aerodynamic Coefficients ================= */
 /* Thrust model: F = KF * omega^2 */
@@ -44,9 +44,9 @@
 #define VBAT_MIN                1.0f        // Avoid division by zero
 
 /* ================= Motor Inverse Model ================= */
-#define A_COEFF                 5.568674828293461e-06f
-#define B_COEFF                 0.007364863007064708f 
-#define C_INIT                  0.0011f
+#define A_COEFF                 5.962921280408465e-06f
+#define B_COEFF                 0.00619623727394045f 
+#define C_INIT                  0.00089f
 /* ============================================================
  *                     SENSOR STRUCTURE
  *   (Main ghi trực tiếp dữ liệu cảm biến vào đây)
@@ -90,6 +90,42 @@ typedef struct {
     ComplementaryFilter_t yaw;
 
 } AttitudeEstimator_t;
+/* ============================================================
+ *                  LOW-PASS FILTER
+ * ============================================================ */
+
+ typedef struct {
+    float cutoff_freq;
+    float dt;
+    float alpha;
+    float d1;
+} FirstOrderLPF_t;
+
+typedef struct {
+    float cutoff_freq;
+    float dt;
+    float b0, b1,b2;
+    float a1, a2;
+    float d1, d2;
+} SecondOrderLPF_t;
+
+typedef struct {
+    FirstOrderLPF_t a_x;
+    FirstOrderLPF_t a_y;
+    FirstOrderLPF_t a_z;
+} AccelLPF_t;
+
+typedef struct {
+    SecondOrderLPF_t p;
+    SecondOrderLPF_t q;
+    SecondOrderLPF_t r;
+} GyroLPF_t;
+
+typedef struct {
+    FirstOrderLPF_t mx;
+    FirstOrderLPF_t my;
+    FirstOrderLPF_t mz;
+} MagLPF_t;
 
 /* ============================================================
  *                      PID
@@ -263,6 +299,10 @@ typedef struct {
     /* === Raw sensor input === */
     DroneSensor_t sensor;
     DroneState_t state;
+    /*=== Low-pass Filters === */
+    AccelLPF_t accel_lpf;
+    GyroLPF_t gyro_lpf;
+    MagLPF_t mag_lpf;
     /* === Estimation result === */
     AttitudeEstimator_t estimator;
     Vec3f_t attitude;     // roll pitch yaw (deg)
@@ -292,6 +332,10 @@ float CF_Update(ComplementaryFilter_t *f,
                 float gyro_rate,
                 float acc_angle);
 void Controller_Init(ControlSystem_t *sys);
+void LPF_FirstOrder_Init(FirstOrderLPF_t *f, float cutoff_freq, float dt);
+float LPF_FirstOrder_Update(FirstOrderLPF_t *f, float input);
+void LPF_SecondOrder_Init(SecondOrderLPF_t *f, float cutoff_freq, float dt);
+float LPF_SecondOrder_Update(SecondOrderLPF_t *f, float input);
 /* --- Sensor --- */
 void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals);
 

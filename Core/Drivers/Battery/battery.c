@@ -40,7 +40,7 @@ void ADC_GetVbat(float *vbat, uint8_t channel)
 
     float vdda = 3.3f * ((float)(*VREFINT_CAL_ADDR) / raw_vref_avg);
 
-    const float divider_gain = 11.67f / 2.567f;
+    const float divider_gain = (R_TOP + R_BOTTOM) / R_BOTTOM;
     const float adc_scale = divider_gain / 4095.0f;
 
     float vbat_new = raw_vbat_avg * vdda * adc_scale;

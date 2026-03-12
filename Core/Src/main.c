@@ -181,13 +181,6 @@ while (1)
         process_TOF_distance(&sys.sensor.distance);
     }
 
-    /* ===================== CRITICAL SAFETY ===================== */
-    if (sys.sensor.ibus.channel[2] == 1.0f &&
-        sys.sensor.ibus.channel[0] == 1.0f)
-    {
-        PWM_ESC_Calib();
-    }
-
     /* ===================== VBAT UPDATE ===================== */
     if (flags & FLAG_VBAT_HALF_UPDATE)
     {
@@ -225,13 +218,21 @@ while (1)
         Motor_Inverse_Model(&sys.signals.motor_desired,
                             &sys.signals.u_esc,
                             sys.sensor.battery);
-
-        if (sys.sensor.ibus.channel[4] == 1.0f)
+        if (sys.sensor.ibus.channel[4] == 0.0f)
         {
-            ESC_Force(&sys.signals.u_esc);
+            // safety mode
+            sys.signals.u_esc.w_fl = sys.sensor.ibus.channel[2];
+            sys.signals.u_esc.w_fr = sys.sensor.ibus.channel[2];
+            sys.signals.u_esc.w_bl = sys.sensor.ibus.channel[2];
+            sys.signals.u_esc.w_br = sys.sensor.ibus.channel[2];
+            ESC_Output(&sys.signals.u_esc);
         }
-
-        ESC_Output(&sys.signals.u_esc);
+        else if (sys.sensor.ibus.channel[5] == 1.0f)
+        {
+            // normal output
+            ESC_Output(&sys.signals.u_esc);
+        }
+ 
         NRF24_Send();
 #if ENABLE_TIMING_DEBUG
         uint32_t elapsed = GET_US() - t_start;
@@ -258,7 +259,15 @@ while (1)
         Motor_RPM_Update_Full(&sys.sensor.motor_rpm);
         rpm_last_capture = HAL_GetTick();
     }
+    /* ============================================================
+     *                      ANGLE LOOP 500Hz
+     * ============================================================ */
+    if (flags & FLAG_ANGLE_LOOP)
+    {
+    
+        
 
+    }
     /* ============================================================
      *                      VELOCITY LOOP 200Hz
      * ============================================================ */

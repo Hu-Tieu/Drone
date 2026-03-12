@@ -151,6 +151,54 @@ static float PID_Update(PID_t *pid, float setpoint, float measurement, float dt)
 }
 
 /* =========================================================
+ *                LOW-PASS FILTER INITIALIZATION
+ * ========================================================= */
+void LPF_FirstOrder_Init(FirstOrderLPF_t *f, float cutoff_freq, float dt)
+{
+    float RC = 1.0f / (2.0f * M_PI * cutoff_freq);
+    f->cutoff_freq = cutoff_freq;
+    f->alpha = dt / (RC + dt);
+    f->dt = dt;
+    f->d1 = 0.0f;
+}
+
+float LPF_FirstOrder_Update(FirstOrderLPF_t *f, float input)
+{
+    f->d1 += f->alpha * (input - f->d1);
+    return f->d1;
+}
+
+void LPF_SecondOrder_Init(SecondOrderLPF_t *f, float cutoff_freq, float dt)
+{
+    float K = tanf(M_PI * cutoff_freq * dt);
+    float norm = 1.0f / (1.0f + 1.4142f * K + K*K);
+
+    f->b0 = K*K * norm;
+    f->b1 = 2.0f * f->b0;
+    f->b2 = f->b0;
+
+    f->a1 = 2.0f * (K*K - 1.0f) * norm;
+    f->a2 = (1.0f - 1.4142f * K + K*K) * norm;
+
+    f->d1 = 0;
+    f->d2 = 0;
+}
+
+float LPF_SecondOrder_Update(SecondOrderLPF_t *f, float input)
+{
+    float output = f->b0 * input + f->d1 ;
+
+    f->d1 = f->b1 * input - f->a1 * output + f->d2;
+    f->d2 = f->b2 * input - f->a2 * output ;
+
+    return output;
+}
+
+
+
+
+
+/* =========================================================
  *                CONTROLLER INITIALIZATION
  * ========================================================= */
 void Controller_Init(ControlSystem_t *sys)
@@ -168,13 +216,26 @@ void Controller_Init(ControlSystem_t *sys)
     /* =====================================================
      * 1. ESTIMATOR LAYER
      * ===================================================== */
-    const float dt    = 0.001f;   // 1 kHz loop
-    const float alpha = 0.98f;
+    const float gyro_sample_rate    = 1.0f/1000.0f;   // 1 kHz loop
+    const float accele_sample_rate  = 1.0f/200.0f;    // 200 Hz 
+    const float mag_sample_rate     = 1.0f/25.0f;     // 25 Hz 
+    const float alpha = 0.98f; 
 
-    CF_Init(&est->roll,  alpha, dt);
-    CF_Init(&est->pitch, alpha, dt);
-    CF_Init(&est->yaw,   alpha, dt);
+    CF_Init(&est->roll,  alpha, gyro_sample_rate);
+    CF_Init(&est->pitch, alpha, gyro_sample_rate);
+    CF_Init(&est->yaw,   alpha, gyro_sample_rate);
 
+    LPF_FirstOrder_Init(&sys->accel_lpf.a_x, 30.0f, accele_sample_rate);
+    LPF_FirstOrder_Init(&sys->accel_lpf.a_y, 30.0f, accele_sample_rate);
+    LPF_FirstOrder_Init(&sys->accel_lpf.a_z, 30.0f, accele_sample_rate);
+
+    LPF_SecondOrder_Init(&sys->gyro_lpf.p, 100.0f, gyro_sample_rate);
+    LPF_SecondOrder_Init(&sys->gyro_lpf.q, 100.0f, gyro_sample_rate);
+    LPF_SecondOrder_Init(&sys->gyro_lpf.r, 100.0f, gyro_sample_rate);
+
+    LPF_FirstOrder_Init(&sys->mag_lpf.mx, 10.0f, mag_sample_rate);
+    LPF_FirstOrder_Init(&sys->mag_lpf.my, 10.0f, mag_sample_rate);
+    LPF_FirstOrder_Init(&sys->mag_lpf.mz, 10.0f, mag_sample_rate);
     /* =====================================================
      * 2. ANGLE CONTROLLER (Outer Loop)
      * ===================================================== */
@@ -477,4 +538,6 @@ void Controller_Rate_Loop(RateController_t *rctrl, DroneState_t *state, Torque_t
     torque_pid->tau_y = PID_Update(&rctrl->q, rate_sp->q , state->omega_body.y,1.0f/RATE_LOOP_HZ);
     torque_pid->tau_z = PID_Update(&rctrl->r, rate_sp->r , state->omega_body.z,1.0f/RATE_LOOP_HZ);
 
+
+    
 }
