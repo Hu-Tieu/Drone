@@ -162,9 +162,9 @@ typedef struct __attribute__((packed))
     int16_t  u_esc_bl;
     int16_t  u_esc_br;
 
-    float imu_m_x;
-    float imu_m_y;
-    float imu_m_z;
+    float omega_body_x;
+    float omega_body_y;
+    float omega_body_z;
 
     int16_t w_fl;
     float   battery;
@@ -189,9 +189,9 @@ typedef struct __attribute__((packed))
     int16_t euler_y;
     int16_t euler_z;
 
-    int16_t omega_body_x;
-    int16_t omega_body_y;
-    int16_t omega_body_z;
+    int16_t imu_m_x;
+    int16_t imu_m_y;
+    int16_t imu_m_z;
 
     int16_t accel_world_x;
     int16_t accel_world_y;

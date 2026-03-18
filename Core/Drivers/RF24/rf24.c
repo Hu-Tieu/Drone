@@ -376,9 +376,9 @@ static void buildTestFrame(TelemetryFrame96_t *frame, uint16_t seq)
     frame->p1.u_esc_fr = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.w_fr : 0.0f, 1000.0f);
     frame->p1.u_esc_bl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.w_bl : 0.0f, 1000.0f);
     frame->p1.u_esc_br = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.w_br : 0.0f, 1000.0f);
-    frame->p1.imu_m_x = g_rf24_sys ? g_rf24_sys->sensor.imu.mx : 0.0f;
-    frame->p1.imu_m_y = g_rf24_sys ? g_rf24_sys->sensor.imu.my : 0.0f;
-    frame->p1.imu_m_z = g_rf24_sys ? g_rf24_sys->sensor.imu.mz : 0.0f;
+    frame->p1.omega_body_x = g_rf24_sys ? g_rf24_sys->state.omega_body.x : 0.0f;
+    frame->p1.omega_body_y = g_rf24_sys ? g_rf24_sys->state.omega_body.y : 0.0f;
+    frame->p1.omega_body_z = g_rf24_sys ? g_rf24_sys->state.omega_body.z : 0.0f;
     frame->p1.w_fl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.motor_desired.w_fl : 0.0f, 1.0f);
     frame->p1.battery = g_rf24_sys ? g_rf24_sys->sensor.battery : 0.0f;
     frame->p1.reserved = (uint8_t)(0xA0u | (g_last_pid_code & 0x0Fu));
@@ -390,9 +390,9 @@ static void buildTestFrame(TelemetryFrame96_t *frame, uint16_t seq)
     frame->p2.euler_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.euler.x : 0.0f, 100.0f);
     frame->p2.euler_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.euler.y : 0.0f, 100.0f);
     frame->p2.euler_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.euler.z : 0.0f, 100.0f);
-    frame->p2.omega_body_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.omega_body.x : 0.0f, 100.0f);
-    frame->p2.omega_body_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.omega_body.y : 0.0f, 100.0f);
-    frame->p2.omega_body_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.omega_body.z : 0.0f, 100.0f);
+    frame->p2.imu_m_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->sensor.imu.mx : 0.0f, 100.0f);
+    frame->p2.imu_m_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->sensor.imu.my : 0.0f, 100.0f);
+    frame->p2.imu_m_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->sensor.imu.mz : 0.0f, 100.0f);
     frame->p2.accel_world_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.x : 0.0f, 100.0f);
     frame->p2.accel_world_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.y : 0.0f, 100.0f);
     frame->p2.accel_world_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.z : 0.0f, 100.0f);

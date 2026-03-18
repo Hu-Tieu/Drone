@@ -20,6 +20,7 @@
 #include "main.h"
 #include "adc.h"
 #include "dma.h"
+#include "fmpi2c.h"
 #include "i2c.h"
 #include "spi.h"
 #include "tim.h"
@@ -41,29 +42,6 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-/* ============================================================
- *                      TIMING DEBUG
- * ============================================================ */
-
-#define ENABLE_TIMING_DEBUG  1
-
-#if ENABLE_TIMING_DEBUG
-
-#define BUDGET_RATE_US       1000U     // 1000 Hz
-#define BUDGET_ANGLE_US      2000U     // 500 Hz
-#define BUDGET_VEL_US        5000U     // 200 Hz
-#define BUDGET_POS_US        20000U    // 50 Hz
-
-static uint32_t dbg_last_print = 0;
-static uint32_t dbg_violation_rate = 0;
-static uint32_t dbg_violation_vel  = 0;
-static uint32_t dbg_violation_pos  = 0;
-
-static uint32_t dbg_max_rate = 0;
-static uint32_t dbg_max_vel  = 0;
-static uint32_t dbg_max_pos  = 0;
-
-#endif
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -90,7 +68,7 @@ int _write(int file, char *ptr, int len);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-ControlSystem_t sys ;
+ControlSystem_t sys = {0} ;
 /* USER CODE END 0 */
 
 /**
@@ -102,15 +80,10 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 
-#if ENABLE_TIMING_DEBUG
-/* Enable DWT Cycle Counter */
+/* Enable DWT cycle counter for scheduler delay monitoring. */
 CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-DWT->CYCCNT = 0;
+DWT->CYCCNT = 0U;
 DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-#endif
-#if ENABLE_TIMING_DEBUG
-#define GET_US()  (DWT->CYCCNT / (SystemCoreClock / 1000000U))
-#endif
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -136,81 +109,89 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   MX_TIM5_Init();
   MX_I2C3_Init();
   MX_SPI1_Init();
-  MX_UART4_Init();
   MX_TIM6_Init();
   MX_TIM8_Init();
   MX_USART2_UART_Init();
+  MX_FMPI2C1_Init();
+  MX_UART5_Init();
   /* USER CODE BEGIN 2 */
   Receiver_HandleTypeDef receiver;
   uint32_t rpm_last_capture = 0;
   IMU_Init();
   PWM_Init();
   TOF_Init();
-  Receiver_Init(&receiver, &huart4);
+  Receiver_Init(&receiver, &huart5);
   ADC_Init();
   NRF24_Init();
   NRF24_BindControlSystem(&sys);
   Controller_Init(&sys);
-  HAL_TIM_Base_Start_IT(&htim6);   // 1ms system tick
+  HAL_TIM_Base_Start_IT(&htim6);   // 0.625ms system tick
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 while (1)
 {
-    uint32_t flags;
+        uint32_t flags;
+        uint32_t run_flag;
+        static uint32_t pending_flags = 0U;
 
     /* ===== Atomic snapshot ===== */
     __disable_irq();
-    flags = g_flag.system;
-    g_flag.system &= ~flags;
+        pending_flags |= g_flag.system;
+        g_flag.system = 0U;
     __enable_irq();
 
-    if (flags == 0U)
+        if ((pending_flags & FLAG_VL53CX_IRQ) != 0U)
+        {
+                Scheduler_ReportTaskDelayAndClear(FLAG_VL53CX_IRQ);
+                pending_flags &= ~FLAG_VL53CX_IRQ;
+                TOF_distance(&tof_last_distance_mm);
+                sys.sensor.distance = tof_last_distance_mm;
+        }
+
+        flags = pending_flags;
+
+        run_flag = Scheduler_SelectHighestPriority(flags);
+        if (run_flag != 0U)
+        {
+                pending_flags &= ~run_flag;
+                Scheduler_ReportTaskDelayAndClear(run_flag);
+        }
+
+        if (run_flag == 0U)
+        {
         continue;
+        }
 
     /* ===================== RF24 IRQ ===================== */
-    if (flags & FLAG_RF24_IRQ)
+        if (run_flag == FLAG_RF24_IRQ)
     {
         NRF24_IRQHandler();
     }
-            
-    /* ===================== VL53CX IRQ ===================== */
-    if (flags & FLAG_VL53CX_IRQ )
-    {
-        process_TOF_distance(&sys.sensor.distance);
-    }
 
     /* ===================== VBAT UPDATE ===================== */
-    if (flags & FLAG_VBAT_HALF_UPDATE)
+        if (run_flag == FLAG_VBAT_HALF_UPDATE)
     {
         ADC_GetVbat(&sys.sensor.battery, ADC_CHANNEL_VBAT_HALF);
     }
 
-    if (flags & FLAG_VBAT_FULL_UPDATE)
+        if (run_flag == FLAG_VBAT_FULL_UPDATE)
     {
         ADC_GetVbat(&sys.sensor.battery, ADC_CHANNEL_VBAT_FULL);
     }
-    /* ============================================================
-     *                      RATE LOOP 1000Hz
-     * ============================================================ */
-    static uint32_t rate_miss = 0;
 
-    if (flags & FLAG_RATE_LOOP)
+        if (run_flag == FLAG_GYRO_UPDATE)
     {
-        uint32_t now = GET_US();
-        static uint32_t last = 0;
-
-        if (now - last > 1100)  // lệch > 100us
-            rate_miss++;
-
-        last = now;
-    #if ENABLE_TIMING_DEBUG
-        uint32_t t_start = GET_US();
-#endif
-
-        Read_Gyro_Accele(&sys.sensor.imu);
-        Estimator_Update(&sys.sensor, &sys.state, &sys.estimator);
+        Read_Gyro(&sys.sensor.imu);
+        Estimator_GyroUpdate(&sys.sensor, &sys.state, &sys.estimator, &sys.gyro_lpf);
+    }
+    
+    /* ============================================================
+     *                      RATE LOOP 400Hz
+     * ============================================================ */
+        if (run_flag == FLAG_RATE_LOOP)
+    {
         Controller_Rate_Loop(&sys.rate_ctrl, &sys.state, &sys.signals.torque_pid, &sys.signals.rate_sp);
         Motor_Mixer(&sys.signals.torque_pid,
                     sys.signals.thrust_sp,
@@ -225,7 +206,9 @@ while (1)
             sys.signals.u_esc.w_fr = sys.sensor.ibus.channel[2];
             sys.signals.u_esc.w_bl = sys.sensor.ibus.channel[2];
             sys.signals.u_esc.w_br = sys.sensor.ibus.channel[2];
+
             ESC_Output(&sys.signals.u_esc);
+        
         }
         else if (sys.sensor.ibus.channel[5] == 1.0f)
         {
@@ -234,118 +217,51 @@ while (1)
         }
  
         NRF24_Send();
-#if ENABLE_TIMING_DEBUG
-        uint32_t elapsed = GET_US() - t_start;
-
-        if (elapsed > dbg_max_rate)
-            dbg_max_rate = elapsed;
-
-        if (elapsed > BUDGET_RATE_US)
-            dbg_violation_rate++;
-#endif
     }
 
     /* ============================================================
      *                      RPM FEEDBACK
      * ============================================================ */
-    if (flags & FLAG_RPM_HALF)
-    {
+        if (run_flag == FLAG_RPM_HALF)
+        {
         Motor_RPM_Update_Half(&sys.sensor.motor_rpm);
         rpm_last_capture = HAL_GetTick();
-    }
+        }
 
-    if (flags & FLAG_RPM_FULL)
-    {
+        if (run_flag == FLAG_RPM_FULL)
+        {
         Motor_RPM_Update_Full(&sys.sensor.motor_rpm);
         rpm_last_capture = HAL_GetTick();
+        }
+    /* ============================================================
+     *                      ANGLE LOOP 200Hz
+     * ============================================================ */
+        if (run_flag == FLAG_ANGLE_LOOP)
+    {
+        /* TODO: angle loop */
     }
     /* ============================================================
-     *                      ANGLE LOOP 500Hz
+     *                      VELOCITY LOOP 100Hz
      * ============================================================ */
-    if (flags & FLAG_ANGLE_LOOP)
+        if (run_flag == FLAG_VELOCITY_LOOP)
     {
-    
-        
-
-    }
-    /* ============================================================
-     *                      VELOCITY LOOP 200Hz
-     * ============================================================ */
-    if (flags & FLAG_VELOCITY_LOOP)
-    {
-#if ENABLE_TIMING_DEBUG
-        uint32_t t_start = GET_US();
-#endif 
-  
         Read_Barometer(&sys.sensor.baro);
         Receiver_ProcessIBUS(&receiver, &sys.sensor.ibus);
         Receiver_Mapping(&sys.sensor, &sys.signals);
-
-#if ENABLE_TIMING_DEBUG
-        uint32_t elapsed = GET_US() - t_start;
-
-        if (elapsed > dbg_max_vel)
-            dbg_max_vel = elapsed;
-
-        if (elapsed > BUDGET_VEL_US)
-            dbg_violation_vel++;
-#endif
     }
 
     /* ============================================================
-     *                      POSITION LOOP 50Hz
+     *                      POSITION LOOP 25Hz
      * ============================================================ */
-    if (flags & FLAG_POSITION_LOOP)
+        if (run_flag == FLAG_POSITION_LOOP)
     {
-#if ENABLE_TIMING_DEBUG
-        uint32_t t_start = GET_US();
-#endif
-
         if (HAL_GetTick() - rpm_last_capture > 400)
         {
             sys.sensor.motor_rpm = 0.0f;
             rpm_last_capture = HAL_GetTick();
         }
         Read_Magnetic(&sys.sensor.imu);
-   
-#if ENABLE_TIMING_DEBUG
-        uint32_t elapsed = GET_US() - t_start;
-
-        if (elapsed > dbg_max_pos)
-            dbg_max_pos = elapsed;
-
-        if (elapsed > BUDGET_POS_US)
-            dbg_violation_pos++;
-#endif
     }
-
-#if ENABLE_TIMING_DEBUG
-/* ===================== 1 SECOND REPORT ===================== */
-if (HAL_GetTick() - dbg_last_print > 1000)
-{
-    dbg_last_print = HAL_GetTick();
-
-    printf("\r\n==== TIMING REPORT ====\r\n");
-    printf("RATE  max: %lu us | over: %lu\r\n",
-           dbg_max_rate, dbg_violation_rate);
-    printf("VEL   max: %lu us | over: %lu\r\n",
-           dbg_max_vel, dbg_violation_vel);
-    printf("POS   max: %lu us | over: %lu\r\n",
-           dbg_max_pos, dbg_violation_pos);
-
-    printf("RATE miss: %lu\r\n", rate_miss);
-
-    dbg_violation_rate = 0;
-    dbg_violation_vel  = 0;
-    dbg_violation_pos  = 0;
-
-    dbg_max_rate = 0;
-    dbg_max_vel  = 0;
-    dbg_max_pos  = 0;
-
-    rate_miss = 0;   // reset mỗi giây
-}
-#endif
 }
     /* USER CODE END WHILE */
 

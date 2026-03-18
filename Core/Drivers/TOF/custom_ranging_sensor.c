@@ -18,12 +18,17 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "custom_ranging_sensor.h"
+#include "fmpi2c.h"
 
 void *CUSTOM_RANGING_CompObj[CUSTOM_RANGING_INSTANCES_NBR] = {0};
 static RANGING_SENSOR_Drv_t *CUSTOM_RANGING_Drv[CUSTOM_RANGING_INSTANCES_NBR];
 static RANGING_SENSOR_Capabilities_t RANGING_SENSOR_Cap[CUSTOM_RANGING_INSTANCES_NBR];
 
 static void reset_device(void);
+static int32_t VL53L3CX_FMPI2C1_Init(void);
+static int32_t VL53L3CX_FMPI2C1_DeInit(void);
+static int32_t VL53L3CX_FMPI2C1_WriteReg(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
+static int32_t VL53L3CX_FMPI2C1_ReadReg(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
 
 #if (USE_CUSTOM_RANGING_VL53L3CX == 1U)
 static int32_t VL53L3CX_Probe(uint32_t Instance);
@@ -240,12 +245,104 @@ int32_t CUSTOM_RANGING_SENSOR_ConfigIT(uint32_t Instance, RANGING_SENSOR_ITConfi
 int32_t CUSTOM_RANGING_SENSOR_GetDistance(uint32_t Instance, RANGING_SENSOR_Result_t *pResult)
 {
   int32_t ret;
+  int32_t comp_ret;
 
   if (Instance >= CUSTOM_RANGING_INSTANCES_NBR)
   {
     ret = BSP_ERROR_WRONG_PARAM;
   }
-  else if (CUSTOM_RANGING_Drv[Instance]->GetDistance(CUSTOM_RANGING_CompObj[Instance], pResult) < 0)
+  else
+  {
+    comp_ret = CUSTOM_RANGING_Drv[Instance]->GetDistance(CUSTOM_RANGING_CompObj[Instance], pResult);
+    if (comp_ret == VL53L3CX_TIMEOUT)
+    {
+      ret = BSP_ERROR_BUSY;
+    }
+    else if (comp_ret < 0)
+    {
+      ret = BSP_ERROR_COMPONENT_FAILURE;
+    }
+    else
+    {
+      ret = BSP_ERROR_NONE;
+    }
+  }
+
+  return ret;
+}
+
+int32_t CUSTOM_RANGING_SENSOR_PollForMeasurement(uint32_t Instance)
+{
+  int32_t ret;
+  int32_t comp_ret;
+
+  if (Instance >= CUSTOM_RANGING_INSTANCES_NBR)
+  {
+    return BSP_ERROR_WRONG_PARAM;
+  }
+
+  comp_ret = VL53L3CX_PollForMeasurement((VL53L3CX_Object_t *)CUSTOM_RANGING_CompObj[Instance]);
+  if (comp_ret == VL53L3CX_TIMEOUT)
+  {
+    ret = BSP_ERROR_BUSY;
+  }
+  else if (comp_ret < 0)
+  {
+    ret = BSP_ERROR_COMPONENT_FAILURE;
+  }
+  else
+  {
+    ret = BSP_ERROR_NONE;
+  }
+
+  return ret;
+}
+
+int32_t CUSTOM_RANGING_SENSOR_GetResult(uint32_t Instance, RANGING_SENSOR_Result_t *pResult)
+{
+  int32_t ret;
+  int32_t comp_ret;
+
+  if (Instance >= CUSTOM_RANGING_INSTANCES_NBR)
+  {
+    return BSP_ERROR_WRONG_PARAM;
+  }
+
+  comp_ret = VL53L3CX_GetResult((VL53L3CX_Object_t *)CUSTOM_RANGING_CompObj[Instance],
+                                (VL53L3CX_Result_t *)pResult);
+  if (comp_ret == VL53L3CX_TIMEOUT)
+  {
+    ret = BSP_ERROR_BUSY;
+  }
+  else if (comp_ret < 0)
+  {
+    ret = BSP_ERROR_COMPONENT_FAILURE;
+  }
+  else
+  {
+    ret = BSP_ERROR_NONE;
+  }
+
+  return ret;
+}
+
+int32_t CUSTOM_RANGING_SENSOR_ClearInterruptAndStartMeasurement(uint32_t Instance)
+{
+  int32_t ret;
+  int32_t comp_ret;
+
+  if (Instance >= CUSTOM_RANGING_INSTANCES_NBR)
+  {
+    return BSP_ERROR_WRONG_PARAM;
+  }
+
+  comp_ret = VL53L3CX_ClearInterruptAndStartMeasurement(
+      (VL53L3CX_Object_t *)CUSTOM_RANGING_CompObj[Instance]);
+  if (comp_ret == VL53L3CX_TIMEOUT)
+  {
+    ret = BSP_ERROR_BUSY;
+  }
+  else if (comp_ret < 0)
   {
     ret = BSP_ERROR_COMPONENT_FAILURE;
   }
@@ -427,10 +524,10 @@ static int32_t VL53L3CX_Probe(uint32_t Instance)
 
   /* Configure the ranging sensor driver */
   IOCtx.Address     = RANGING_SENSOR_VL53L3CX_ADDRESS;
-  IOCtx.Init        = CUSTOM_VL53L3CX_I2C_INIT;
-  IOCtx.DeInit      = CUSTOM_VL53L3CX_I2C_DEINIT;
-  IOCtx.WriteReg    = CUSTOM_VL53L3CX_I2C_WRITEREG;
-  IOCtx.ReadReg     = CUSTOM_VL53L3CX_I2C_READREG;
+  IOCtx.Init        = VL53L3CX_FMPI2C1_Init;
+  IOCtx.DeInit      = VL53L3CX_FMPI2C1_DeInit;
+  IOCtx.WriteReg    = VL53L3CX_FMPI2C1_WriteReg;
+  IOCtx.ReadReg     = VL53L3CX_FMPI2C1_ReadReg;
   IOCtx.GetTick     = BSP_GetTick;
 
   if (VL53L3CX_RegisterBusIO(&VL53L3CXObj, &IOCtx) != VL53L3CX_OK)
@@ -480,4 +577,49 @@ static void reset_device(void)
   HAL_GPIO_WritePin(CUSTOM_VL53L3CX_XSHUT_PORT, CUSTOM_VL53L3CX_XSHUT_PIN, GPIO_PIN_SET);
   HAL_Delay(2);
 #endif /* Use custom ranging */
+}
+
+static int32_t VL53L3CX_FMPI2C1_Init(void)
+{
+  if (HAL_FMPI2C_GetState(&hfmpi2c1) == HAL_FMPI2C_STATE_RESET)
+  {
+    MX_FMPI2C1_Init();
+  }
+
+  return BSP_ERROR_NONE;
+}
+
+static int32_t VL53L3CX_FMPI2C1_DeInit(void)
+{
+  return BSP_ERROR_NONE;
+}
+
+static int32_t VL53L3CX_FMPI2C1_WriteReg(uint16_t DevAddr, uint8_t *pData, uint16_t Length)
+{
+  if (HAL_FMPI2C_Master_Transmit(&hfmpi2c1, DevAddr, pData, Length, BUS_I2C1_POLL_TIMEOUT) == HAL_OK)
+  {
+    return BSP_ERROR_NONE;
+  }
+
+  if (HAL_FMPI2C_GetError(&hfmpi2c1) == HAL_FMPI2C_ERROR_AF)
+  {
+    return BSP_ERROR_BUS_ACKNOWLEDGE_FAILURE;
+  }
+
+  return BSP_ERROR_PERIPH_FAILURE;
+}
+
+static int32_t VL53L3CX_FMPI2C1_ReadReg(uint16_t DevAddr, uint8_t *pData, uint16_t Length)
+{
+  if (HAL_FMPI2C_Master_Receive(&hfmpi2c1, DevAddr, pData, Length, BUS_I2C1_POLL_TIMEOUT) == HAL_OK)
+  {
+    return BSP_ERROR_NONE;
+  }
+
+  if (HAL_FMPI2C_GetError(&hfmpi2c1) == HAL_FMPI2C_ERROR_AF)
+  {
+    return BSP_ERROR_BUS_ACKNOWLEDGE_FAILURE;
+  }
+
+  return BSP_ERROR_PERIPH_FAILURE;
 }

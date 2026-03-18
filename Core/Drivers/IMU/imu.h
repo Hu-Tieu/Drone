@@ -199,21 +199,21 @@ typedef struct {
  * ===================== MAG CALIB ============================
  * ============================================================*/
 
-#define MAG_OX  -7.648902f
-#define MAG_OY 1.561279f
-#define MAG_OZ 35.312028f
+#define MAG_OX -7.27317214f
+#define MAG_OY 0.72604599f
+#define MAG_OZ 35.24629018f
 
-#define MAG_M11 0.967053393f
-#define MAG_M12 -0.009646967f
-#define MAG_M13 0.011090925f
+#define MAG_M11 1.0f
+#define MAG_M12 0.0f
+#define MAG_M13 0.0f
 
-#define MAG_M21 -0.009646967f
-#define MAG_M22 0.977562534f
-#define MAG_M23 -0.003298029f
+#define MAG_M21 0.0f
+#define MAG_M22 1.0f
+#define MAG_M23 0.0f
 
-#define MAG_M31 0.011090925f
-#define MAG_M32 -0.003298029f
-#define MAG_M33 0.935068752f
+#define MAG_M31 0.0f
+#define MAG_M32 0.0f
+#define MAG_M33 1.0f
 
 /* ============================================================
  * ===================== FUNCTION PROTOTYPES ==================
@@ -223,7 +223,8 @@ typedef struct {
 #define gamma_alpha  0.96f
 
 void bmx160_init(void);
-void Read_Gyro_Accele(IMU_Data_t *imu_data);
+void Read_Gyro(IMU_Data_t *imu_data);
+void Read_Accel(IMU_Data_t *imu_data);
 void Read_Magnetic(IMU_Data_t *imu_data);
 void bmp388_init(void);
 void Read_Barometer(Baro_Data_t *baro);

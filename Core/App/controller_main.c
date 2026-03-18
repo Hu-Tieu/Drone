@@ -1,7 +1,7 @@
 #include "controller_main.h"
 #include "PWM/PWM.h"
 #include "controller_scheduler.h"
-
+#include "stdio.h"
 static inline float clamp(float duty)
 {
     return (duty < 0.0f) ? 0.0f : (duty > 1.0f) ? 1.0f : duty;
@@ -171,14 +171,14 @@ float LPF_FirstOrder_Update(FirstOrderLPF_t *f, float input)
 void LPF_SecondOrder_Init(SecondOrderLPF_t *f, float cutoff_freq, float dt)
 {
     float K = tanf(M_PI * cutoff_freq * dt);
-    float norm = 1.0f / (1.0f + 1.4142f * K + K*K);
+    float norm = 1.0f / (1.0f + sqrtf(2.0f) * K + K*K);
 
     f->b0 = K*K * norm;
     f->b1 = 2.0f * f->b0;
     f->b2 = f->b0;
 
     f->a1 = 2.0f * (K*K - 1.0f) * norm;
-    f->a2 = (1.0f - 1.4142f * K + K*K) * norm;
+    f->a2 = (1.0f - sqrtf(2.0f) * K + K*K) * norm;
 
     f->d1 = 0;
     f->d2 = 0;
@@ -216,26 +216,26 @@ void Controller_Init(ControlSystem_t *sys)
     /* =====================================================
      * 1. ESTIMATOR LAYER
      * ===================================================== */
-    const float gyro_sample_rate    = 1.0f/1000.0f;   // 1 kHz loop
-    const float accele_sample_rate  = 1.0f/200.0f;    // 200 Hz 
-    const float mag_sample_rate     = 1.0f/25.0f;     // 25 Hz 
+    const float gyro_dt    = 1.0f/800.0f;   // 1 kHz loop
+    const float accele_dt  = 1.0f/200.0f;    // 200 Hz 
+    const float mag_dt     = 1.0f/25.0f;     // 25 Hz 
     const float alpha = 0.98f; 
 
-    CF_Init(&est->roll,  alpha, gyro_sample_rate);
-    CF_Init(&est->pitch, alpha, gyro_sample_rate);
-    CF_Init(&est->yaw,   alpha, gyro_sample_rate);
+    CF_Init(&est->roll,  alpha, gyro_dt);
+    CF_Init(&est->pitch, alpha, gyro_dt);
+    CF_Init(&est->yaw,   alpha, gyro_dt);
 
-    LPF_FirstOrder_Init(&sys->accel_lpf.a_x, 30.0f, accele_sample_rate);
-    LPF_FirstOrder_Init(&sys->accel_lpf.a_y, 30.0f, accele_sample_rate);
-    LPF_FirstOrder_Init(&sys->accel_lpf.a_z, 30.0f, accele_sample_rate);
+    LPF_FirstOrder_Init(&sys->accel_lpf.ax, 30.0f, accele_dt);
+    LPF_FirstOrder_Init(&sys->accel_lpf.ay, 30.0f, accele_dt);
+    LPF_FirstOrder_Init(&sys->accel_lpf.az, 30.0f, accele_dt);
 
-    LPF_SecondOrder_Init(&sys->gyro_lpf.p, 100.0f, gyro_sample_rate);
-    LPF_SecondOrder_Init(&sys->gyro_lpf.q, 100.0f, gyro_sample_rate);
-    LPF_SecondOrder_Init(&sys->gyro_lpf.r, 100.0f, gyro_sample_rate);
+    LPF_SecondOrder_Init(&sys->gyro_lpf.p, 80.0f, gyro_dt);
+    LPF_SecondOrder_Init(&sys->gyro_lpf.q, 80.0f, gyro_dt);
+    LPF_SecondOrder_Init(&sys->gyro_lpf.r, 80.0f, gyro_dt);
 
-    LPF_FirstOrder_Init(&sys->mag_lpf.mx, 10.0f, mag_sample_rate);
-    LPF_FirstOrder_Init(&sys->mag_lpf.my, 10.0f, mag_sample_rate);
-    LPF_FirstOrder_Init(&sys->mag_lpf.mz, 10.0f, mag_sample_rate);
+    LPF_FirstOrder_Init(&sys->mag_lpf.mx, 10.0f, mag_dt);
+    LPF_FirstOrder_Init(&sys->mag_lpf.my, 10.0f, mag_dt);
+    LPF_FirstOrder_Init(&sys->mag_lpf.mz, 10.0f, mag_dt);
     /* =====================================================
      * 2. ANGLE CONTROLLER (Outer Loop)
      * ===================================================== */
@@ -307,9 +307,7 @@ void Controller_Init(ControlSystem_t *sys)
 }
 
 
-void Estimator_Update(DroneSensor_t *sensor,
-                      DroneState_t *state,
-                      AttitudeEstimator_t *estimator)
+void Estimator_Update(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator)
 {
     /* =====================================================
      * 1. RAW SENSOR  (ALL RAD)
@@ -328,7 +326,6 @@ void Estimator_Update(DroneSensor_t *sensor,
     float mz = sensor->imu.mz;
 
     float dt = estimator->roll.dt;
-
     /* =====================================================
      * 2. ROLL & PITCH 
      * ===================================================== */
@@ -343,7 +340,7 @@ void Estimator_Update(DroneSensor_t *sensor,
     state->euler.y = pitch;  
 
     /* =====================================================
-     * 3. YAW )
+     * 3. YAW 
      * ===================================================== */
 
     float phi   = roll;
@@ -454,6 +451,77 @@ void Estimator_Update(DroneSensor_t *sensor,
 
     state->position.z = sensor->distance;
 }
+
+void Estimator_GyroUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator,GyroLPF_t *gyro_lpf)
+{
+    /* =====================================================
+     * 1. RAW GYRO
+     * ===================================================== */
+    
+    float gx_raw = sensor->imu.gx;
+    float gy_raw = sensor->imu.gy;
+    float gz_raw = sensor->imu.gz;
+
+    /* =====================================================
+     * 2. LOW-PASS FILTER
+     * ===================================================== */
+    float gx_f = LPF_SecondOrder_Update(&gyro_lpf->p, gx_raw);
+    float gy_f = LPF_SecondOrder_Update(&gyro_lpf->q, gy_raw);
+    float gz_f = LPF_SecondOrder_Update(&gyro_lpf->r, gz_raw);
+
+    state->omega_body.x = gx_f;
+    state->omega_body.y = gy_f;
+    state->omega_body.z = gz_f;
+
+    }
+
+void Estimator_AccelUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, AccelLPF_t *accel_lpf)
+{
+    /* =====================================================
+     * 1. RAW ACCEL
+     * ===================================================== */
+    
+     float ax = sensor->imu.ax;
+     float ay = sensor->imu.ay;
+     float az = sensor->imu.az;
+    /* =====================================================
+     * 2. LOW-PASS FILTER
+     * ===================================================== */
+    ax = LPF_FirstOrder_Update(&accel_lpf->ax, ax);
+    ay = LPF_FirstOrder_Update(&accel_lpf->ay, ay);
+    az = LPF_FirstOrder_Update(&accel_lpf->az, az);
+
+    }
+
+void Estimator_MagUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, MagLPF_t *mag_lpf)
+{
+    /* =====================================================
+     * 1. RAW MAG
+     * ===================================================== */
+
+    float mx = sensor->imu.mx;
+    float my = sensor->imu.my;
+    float mz = sensor->imu.mz;
+
+    /* =====================================================
+     * 2. LOW-PASS FILTER
+     * ===================================================== */
+    mx = LPF_FirstOrder_Update(&mag_lpf->mx, mx);
+    my = LPF_FirstOrder_Update(&mag_lpf->my, my);
+    mz = LPF_FirstOrder_Update(&mag_lpf->mz, mz);
+}
+
+
+
+
+
+
+
+
+
+
+
+
 void Motor_Mixer(Torque_t *torque_total,
                  float thrust_sp,
                  MotorCommand_t *motor_desired)

@@ -102,6 +102,14 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
+#ifndef TOF_XSHUT_Pin
+#define TOF_XSHUT_Pin GPIO_PIN_5
+#endif
+
+#ifndef TOF_XSHUT_GPIO_Port
+#define TOF_XSHUT_GPIO_Port GPIOB
+#endif
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

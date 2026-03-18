@@ -352,7 +352,7 @@ void bmx160_init(void) {
 
 }
 
-void Read_Gyro_Accele(IMU_Data_t *imu)
+void Read_Gyro(IMU_Data_t *imu)
 {
     uint8_t data[BMX160_ACCEL_LEN + BMX160_GYRO_LEN];
 
@@ -373,17 +373,29 @@ void Read_Gyro_Accele(IMU_Data_t *imu)
     imu->gx =  gy * 3.8e-3f * M_PI / 180.0f;
     imu->gz = -gz * 3.8e-3f * M_PI / 180.0f;
 
-    /* ===== Accel ===== */
-    int16_t ax = (int16_t)(data[6]  | (data[7]  << 8));
-    int16_t ay = (int16_t)(data[8]  | (data[9]  << 8));
-    int16_t az = (int16_t)(data[10] | (data[11] << 8));
-
-    imu->ay = -ax * 6.1e-5f * 9.807f; // LSB → m/s²
-    imu->ax = -ay * 6.1e-5f * 9.807f;
-    imu->az =  az * 6.1e-5f * 9.807f;
     
 }
 
+void Read_Accel(IMU_Data_t *imu_data)
+{
+    uint8_t data[BMX160_ACCEL_LEN];
+
+    HAL_I2C_Mem_Read(hi2c3_IMU,
+                     BMX160_ADDRESS,
+                     BMX160_REG_ACCEL_DATA_0,
+                     I2C_MEMADD_SIZE_8BIT,
+                     data,
+                     BMX160_ACCEL_LEN,
+                     HAL_MAX_DELAY);
+
+    int16_t ax = (int16_t)(data[0] | (data[1] << 8));
+    int16_t ay = (int16_t)(data[2] | (data[3] << 8));
+    int16_t az = (int16_t)(data[4] | (data[5] << 8));
+
+    imu_data->ay = -ax * 6.1e-5f * 9.807f; // LSB → m/s²
+    imu_data->ax = -ay * 6.1e-5f * 9.807f;
+    imu_data->az =  az * 6.1e-5f * 9.807f;
+}
 void Read_Magnetic(IMU_Data_t *imu_data)
 {
     uint8_t data[BMX160_MAG_LEN];

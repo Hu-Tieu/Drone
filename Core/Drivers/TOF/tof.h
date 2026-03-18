@@ -2,8 +2,11 @@
 #define DRIVERS_SENSOR_TOF_H_
 
 #include <stdint.h>
-#define TIMING_BUDGET           (100U)
+#define TIMING_BUDGET           (500U)
+
+extern long tof_last_distance_mm;
+
 void TOF_Init(void);
-void process_TOF_distance(long *distance);
+void TOF_distance(long *distance);
 
 #endif /* DRIVERS_SENSOR_TOF_H_ */

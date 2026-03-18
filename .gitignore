@@ -17,3 +17,10 @@
 
 !Core/Inc/
 !Core/Inc/main.h
+
+# mở Drivers từng cấp
+!Drivers/
+!Drivers/BSP/
+!Drivers/BSP/Components/
+!Drivers/BSP/Components/vl53l3cx/
+!Drivers/BSP/Components/vl53l3cx/**
