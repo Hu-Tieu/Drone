@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "custom_ranging_sensor.h"
 #include "fmpi2c.h"
+#include "vl53l3cx.h"
 
 void *CUSTOM_RANGING_CompObj[CUSTOM_RANGING_INSTANCES_NBR] = {0};
 static RANGING_SENSOR_Drv_t *CUSTOM_RANGING_Drv[CUSTOM_RANGING_INSTANCES_NBR];
@@ -29,6 +30,7 @@ static int32_t VL53L3CX_FMPI2C1_Init(void);
 static int32_t VL53L3CX_FMPI2C1_DeInit(void);
 static int32_t VL53L3CX_FMPI2C1_WriteReg(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
 static int32_t VL53L3CX_FMPI2C1_ReadReg(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
+static int32_t VL53L3CX_GetTick(void);
 
 #if (USE_CUSTOM_RANGING_VL53L3CX == 1U)
 static int32_t VL53L3CX_Probe(uint32_t Instance);
@@ -528,7 +530,7 @@ static int32_t VL53L3CX_Probe(uint32_t Instance)
   IOCtx.DeInit      = VL53L3CX_FMPI2C1_DeInit;
   IOCtx.WriteReg    = VL53L3CX_FMPI2C1_WriteReg;
   IOCtx.ReadReg     = VL53L3CX_FMPI2C1_ReadReg;
-  IOCtx.GetTick     = BSP_GetTick;
+  IOCtx.GetTick     = VL53L3CX_GetTick;
 
   if (VL53L3CX_RegisterBusIO(&VL53L3CXObj, &IOCtx) != VL53L3CX_OK)
   {
@@ -596,7 +598,7 @@ static int32_t VL53L3CX_FMPI2C1_DeInit(void)
 
 static int32_t VL53L3CX_FMPI2C1_WriteReg(uint16_t DevAddr, uint8_t *pData, uint16_t Length)
 {
-  if (HAL_FMPI2C_Master_Transmit(&hfmpi2c1, DevAddr, pData, Length, BUS_I2C1_POLL_TIMEOUT) == HAL_OK)
+  if (HAL_FMPI2C_Master_Transmit(&hfmpi2c1, DevAddr, pData, Length, 0x1000) == HAL_OK)
   {
     return BSP_ERROR_NONE;
   }
@@ -611,7 +613,7 @@ static int32_t VL53L3CX_FMPI2C1_WriteReg(uint16_t DevAddr, uint8_t *pData, uint1
 
 static int32_t VL53L3CX_FMPI2C1_ReadReg(uint16_t DevAddr, uint8_t *pData, uint16_t Length)
 {
-  if (HAL_FMPI2C_Master_Receive(&hfmpi2c1, DevAddr, pData, Length, BUS_I2C1_POLL_TIMEOUT) == HAL_OK)
+  if (HAL_FMPI2C_Master_Receive(&hfmpi2c1, DevAddr, pData, Length, 0x1000) == HAL_OK)
   {
     return BSP_ERROR_NONE;
   }
@@ -622,4 +624,9 @@ static int32_t VL53L3CX_FMPI2C1_ReadReg(uint16_t DevAddr, uint8_t *pData, uint16
   }
 
   return BSP_ERROR_PERIPH_FAILURE;
+}
+
+static int32_t VL53L3CX_GetTick(void)
+{
+  return (int32_t)HAL_GetTick();
 }

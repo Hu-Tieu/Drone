@@ -13,14 +13,11 @@
 
 # allow main
 !Core/Src/
-!Core/Src/main.c
+!Core/Src/**
 
 !Core/Inc/
-!Core/Inc/main.h
+!Core/Inc/**
 
 # mở Drivers từng cấp
 !Drivers/
-!Drivers/BSP/
-!Drivers/BSP/Components/
-!Drivers/BSP/Components/vl53l3cx/
-!Drivers/BSP/Components/vl53l3cx/**
+!Drivers/**

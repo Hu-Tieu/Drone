@@ -132,8 +132,6 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE BEGIN WHILE */
 while (1)
 {
-        uint32_t flags;
-        uint32_t run_flag;
         static uint32_t pending_flags = 0U;
 
     /* ===== Atomic snapshot ===== */
@@ -142,47 +140,38 @@ while (1)
         g_flag.system = 0U;
     __enable_irq();
 
-        if ((pending_flags & FLAG_VL53CX_IRQ) != 0U)
-        {
-                Scheduler_ReportTaskDelayAndClear(FLAG_VL53CX_IRQ);
-                pending_flags &= ~FLAG_VL53CX_IRQ;
-                TOF_distance(&tof_last_distance_mm);
-                sys.sensor.distance = tof_last_distance_mm;
-        }
-
-        flags = pending_flags;
-
-        run_flag = Scheduler_SelectHighestPriority(flags);
-        if (run_flag != 0U)
-        {
-                pending_flags &= ~run_flag;
-                Scheduler_ReportTaskDelayAndClear(run_flag);
-        }
-
-        if (run_flag == 0U)
+    if (pending_flags == 0U)
         {
         continue;
         }
 
     /* ===================== RF24 IRQ ===================== */
-        if (run_flag == FLAG_RF24_IRQ)
+    if ((pending_flags & FLAG_RF24_IRQ) != 0U)
     {
+    pending_flags &= ~FLAG_RF24_IRQ;
+    Scheduler_ReportTaskDelayAndClear(FLAG_RF24_IRQ);
         NRF24_IRQHandler();
     }
 
     /* ===================== VBAT UPDATE ===================== */
-        if (run_flag == FLAG_VBAT_HALF_UPDATE)
+    if ((pending_flags & FLAG_VBAT_HALF_UPDATE) != 0U)
     {
+    pending_flags &= ~FLAG_VBAT_HALF_UPDATE;
+    Scheduler_ReportTaskDelayAndClear(FLAG_VBAT_HALF_UPDATE);
         ADC_GetVbat(&sys.sensor.battery, ADC_CHANNEL_VBAT_HALF);
     }
 
-        if (run_flag == FLAG_VBAT_FULL_UPDATE)
+    if ((pending_flags & FLAG_VBAT_FULL_UPDATE) != 0U)
     {
+    pending_flags &= ~FLAG_VBAT_FULL_UPDATE;
+    Scheduler_ReportTaskDelayAndClear(FLAG_VBAT_FULL_UPDATE);
         ADC_GetVbat(&sys.sensor.battery, ADC_CHANNEL_VBAT_FULL);
     }
 
-        if (run_flag == FLAG_GYRO_UPDATE)
+    if ((pending_flags & FLAG_GYRO_UPDATE) != 0U)
     {
+    pending_flags &= ~FLAG_GYRO_UPDATE;
+    Scheduler_ReportTaskDelayAndClear(FLAG_GYRO_UPDATE);
         Read_Gyro(&sys.sensor.imu);
         Estimator_GyroUpdate(&sys.sensor, &sys.state, &sys.estimator, &sys.gyro_lpf);
     }
@@ -190,8 +179,10 @@ while (1)
     /* ============================================================
      *                      RATE LOOP 400Hz
      * ============================================================ */
-        if (run_flag == FLAG_RATE_LOOP)
+        if ((pending_flags & FLAG_RATE_LOOP) != 0U)
     {
+        pending_flags &= ~FLAG_RATE_LOOP;
+        Scheduler_ReportTaskDelayAndClear(FLAG_RATE_LOOP);
         Controller_Rate_Loop(&sys.rate_ctrl, &sys.state, &sys.signals.torque_pid, &sys.signals.rate_sp);
         Motor_Mixer(&sys.signals.torque_pid,
                     sys.signals.thrust_sp,
@@ -222,29 +213,37 @@ while (1)
     /* ============================================================
      *                      RPM FEEDBACK
      * ============================================================ */
-        if (run_flag == FLAG_RPM_HALF)
+        if ((pending_flags & FLAG_RPM_HALF) != 0U)
         {
+        pending_flags &= ~FLAG_RPM_HALF;
+        Scheduler_ReportTaskDelayAndClear(FLAG_RPM_HALF);
         Motor_RPM_Update_Half(&sys.sensor.motor_rpm);
         rpm_last_capture = HAL_GetTick();
         }
 
-        if (run_flag == FLAG_RPM_FULL)
+        if ((pending_flags & FLAG_RPM_FULL) != 0U)
         {
+        pending_flags &= ~FLAG_RPM_FULL;
+        Scheduler_ReportTaskDelayAndClear(FLAG_RPM_FULL);
         Motor_RPM_Update_Full(&sys.sensor.motor_rpm);
         rpm_last_capture = HAL_GetTick();
         }
     /* ============================================================
      *                      ANGLE LOOP 200Hz
      * ============================================================ */
-        if (run_flag == FLAG_ANGLE_LOOP)
+        if ((pending_flags & FLAG_ANGLE_LOOP) != 0U)
     {
+        pending_flags &= ~FLAG_ANGLE_LOOP;
+        Scheduler_ReportTaskDelayAndClear(FLAG_ANGLE_LOOP);
         /* TODO: angle loop */
     }
     /* ============================================================
      *                      VELOCITY LOOP 100Hz
      * ============================================================ */
-        if (run_flag == FLAG_VELOCITY_LOOP)
+        if ((pending_flags & FLAG_VELOCITY_LOOP) != 0U)
     {
+        pending_flags &= ~FLAG_VELOCITY_LOOP;
+        Scheduler_ReportTaskDelayAndClear(FLAG_VELOCITY_LOOP);
         Read_Barometer(&sys.sensor.baro);
         Receiver_ProcessIBUS(&receiver, &sys.sensor.ibus);
         Receiver_Mapping(&sys.sensor, &sys.signals);
@@ -253,8 +252,10 @@ while (1)
     /* ============================================================
      *                      POSITION LOOP 25Hz
      * ============================================================ */
-        if (run_flag == FLAG_POSITION_LOOP)
+        if ((pending_flags & FLAG_POSITION_LOOP) != 0U)
     {
+        pending_flags &= ~FLAG_POSITION_LOOP;
+        Scheduler_ReportTaskDelayAndClear(FLAG_POSITION_LOOP);
         if (HAL_GetTick() - rpm_last_capture > 400)
         {
             sys.sensor.motor_rpm = 0.0f;
@@ -262,6 +263,20 @@ while (1)
         }
         Read_Magnetic(&sys.sensor.imu);
     }
+
+        if ((pending_flags & FLAG_VL53CX_IRQ) != 0U)
+        {
+            pending_flags &= ~FLAG_VL53CX_IRQ;
+            Scheduler_ReportTaskDelayAndClear(FLAG_VL53CX_IRQ);
+            TOF_distance(&tof_last_distance_mm);
+            sys.sensor.distance = tof_last_distance_mm;
+        }
+
+        if ((pending_flags & FLAG_LOWER_LOOP) != 0U)
+        {
+            pending_flags &= ~FLAG_LOWER_LOOP;
+            Scheduler_ReportTaskDelayAndClear(FLAG_LOWER_LOOP);
+        }
 }
     /* USER CODE END WHILE */
 

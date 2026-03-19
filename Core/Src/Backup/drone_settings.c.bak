@@ -1,0 +1,16 @@
+#include "drone_settings.h"
+
+#include "i2c.h"
+#include "spi.h"
+#include "tim.h"
+#include "adc.h"
+
+
+/* ===== alias DEFINE ===== */
+I2C_HandleTypeDef *hi2c3_IMU      = &hi2c3;
+SPI_HandleTypeDef *hspi1_RF24     = &hspi1;
+TIM_HandleTypeDef *htim5_encoder  = &htim5;
+
+
+ADC_HandleTypeDef *hadc1_Vbat    = &hadc1;
+DMA_HandleTypeDef *hdma_V		 = &hdma_adc1;

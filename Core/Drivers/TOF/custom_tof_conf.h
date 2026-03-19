@@ -27,7 +27,6 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f4xx_hal.h"
-#include "stm32f4xx_nucleo_bus.h"
 #include "stm32f4xx_nucleo_errno.h"
 
 /* USER CODE BEGIN 1 */

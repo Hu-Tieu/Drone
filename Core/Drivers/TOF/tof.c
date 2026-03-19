@@ -43,15 +43,29 @@ static void TOF_UpdateDistanceFromResult(long *distance)
     }
 }
 
-void TOF_Init(void) {
-    CUSTOM_RANGING_SENSOR_Init(CUSTOM_VL53L3CX);
+int32_t TOF_Init(void) {
+    int32_t ret;
+    
+    ret = CUSTOM_RANGING_SENSOR_Init(CUSTOM_VL53L3CX);
+    if (ret != BSP_ERROR_NONE)
+    {
+        return ret;
+    }
+    
     Profile.RangingProfile = RS_MULTI_TARGET_LONG_RANGE;
     Profile.TimingBudget = TIMING_BUDGET;
     Profile.Frequency = (uint32_t) 1000 / TIMING_BUDGET; // Hz
     Profile.EnableAmbient = 1;
     Profile.EnableSignal = 1;
-    CUSTOM_RANGING_SENSOR_ConfigProfile(CUSTOM_VL53L3CX, &Profile);
-    CUSTOM_RANGING_SENSOR_Start(CUSTOM_VL53L3CX, RS_MODE_ASYNC_CONTINUOUS);
+    
+    ret = CUSTOM_RANGING_SENSOR_ConfigProfile(CUSTOM_VL53L3CX, &Profile);
+    if (ret != BSP_ERROR_NONE)
+    {
+        return ret;
+    }
+    
+    ret = CUSTOM_RANGING_SENSOR_Start(CUSTOM_VL53L3CX, RS_MODE_ASYNC_CONTINUOUS);
+    return ret;
 }
 
 void TOF_distance(long *distance)

@@ -69,6 +69,11 @@ extern "C" {
 #define VL53L3CX_INVALID_PARAM      (-2)
 #define VL53L3CX_TIMEOUT            (-3)
 #define VL53L3CX_NOT_IMPLEMENTED    (-4)
+
+/* DMA Read States */
+#define VL53L3CX_DMA_STATE_IDLE     (0U)
+#define VL53L3CX_DMA_STATE_READING  (1U)  /* DMA transfer in progress */
+#define VL53L3CX_DMA_STATE_PENDING  (2U)  /* Waiting for EOF after DMA complete */
 /**
   * @}
   */

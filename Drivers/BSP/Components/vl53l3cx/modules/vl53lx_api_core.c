@@ -51,145 +51,6 @@
 	level, VL53LX_TRACE_FUNCTION_NONE, ##__VA_ARGS__)
 
 #define VL53LX_MAX_I2C_XFER_SIZE 256
-#define VL53LX_HIST_DMA_TIMEOUT_MS 20U
-#define VL53LX_WRITE_DMA_TIMEOUT_MS 20U
-
-typedef enum {
-	VL53LX_HIST_DMA_IDLE = 0,
-	VL53LX_HIST_DMA_READING,
-	VL53LX_HIST_DMA_DONE,
-	VL53LX_HIST_DMA_ERROR
-} VL53LX_HistDmaState_t;
-
-typedef enum {
-	VL53LX_WRITE_DMA_IDLE = 0,
-	VL53LX_WRITE_DMA_WRITING,
-	VL53LX_WRITE_DMA_DONE,
-	VL53LX_WRITE_DMA_ERROR
-} VL53LX_WriteDmaState_t;
-
-static volatile VL53LX_HistDmaState_t vl53lx_hist_dma_state = VL53LX_HIST_DMA_IDLE;
-static uint8_t vl53lx_hist_dma_buffer[VL53LX_MAX_I2C_XFER_SIZE];
-static uint32_t vl53lx_hist_dma_start_tick = 0U;
-static volatile VL53LX_WriteDmaState_t vl53lx_write_dma_state = VL53LX_WRITE_DMA_IDLE;
-static uint8_t vl53lx_write_dma_buffer[VL53LX_MAX_I2C_XFER_SIZE];
-static uint16_t vl53lx_write_dma_index = 0U;
-static uint16_t vl53lx_write_dma_size = 0U;
-
-static VL53LX_Error vl53lx_write_multi_dma_blocking(
-	VL53LX_DEV Dev,
-	uint16_t index,
-	uint8_t *pbuffer,
-	uint16_t size)
-{
-	uint32_t start_tick;
-
-	if ((Dev == NULL) || (pbuffer == NULL) || (size == 0U) ||
-		(size > VL53LX_MAX_I2C_XFER_SIZE)) {
-		return VL53LX_ERROR_INVALID_PARAMS;
-	}
-
-	memcpy(vl53lx_write_dma_buffer, pbuffer, size);
-	vl53lx_write_dma_index = index;
-	vl53lx_write_dma_size = size;
-	vl53lx_write_dma_state = VL53LX_WRITE_DMA_WRITING;
-
-	if (HAL_FMPI2C_Mem_Write_DMA(&hfmpi2c1,
-			Dev->IO.Address,
-			vl53lx_write_dma_index,
-			FMPI2C_MEMADD_SIZE_16BIT,
-			vl53lx_write_dma_buffer,
-			vl53lx_write_dma_size) != HAL_OK) {
-		vl53lx_write_dma_state = VL53LX_WRITE_DMA_IDLE;
-		return VL53LX_ERROR_CONTROL_INTERFACE;
-	}
-
-	start_tick = HAL_GetTick();
-	while (vl53lx_write_dma_state == VL53LX_WRITE_DMA_WRITING) {
-		if ((HAL_GetTick() - start_tick) > VL53LX_WRITE_DMA_TIMEOUT_MS) {
-			vl53lx_write_dma_state = VL53LX_WRITE_DMA_IDLE;
-			return VL53LX_ERROR_TIME_OUT;
-		}
-		__WFI();
-	}
-
-	if (vl53lx_write_dma_state == VL53LX_WRITE_DMA_DONE) {
-		vl53lx_write_dma_state = VL53LX_WRITE_DMA_IDLE;
-		return VL53LX_ERROR_NONE;
-	}
-
-	vl53lx_write_dma_state = VL53LX_WRITE_DMA_IDLE;
-	return VL53LX_ERROR_CONTROL_INTERFACE;
-}
-
-static VL53LX_Error vl53lx_read_histogram_dma(
-	VL53LX_DEV Dev,
-	uint8_t **ppbuffer)
-{
-	*ppbuffer = &vl53lx_hist_dma_buffer[0];
-
-	if (vl53lx_hist_dma_state == VL53LX_HIST_DMA_DONE) {
-		vl53lx_hist_dma_state = VL53LX_HIST_DMA_IDLE;
-		return VL53LX_ERROR_NONE;
-	}
-
-	if (vl53lx_hist_dma_state == VL53LX_HIST_DMA_ERROR) {
-		vl53lx_hist_dma_state = VL53LX_HIST_DMA_IDLE;
-		return VL53LX_ERROR_CONTROL_INTERFACE;
-	}
-
-	if (vl53lx_hist_dma_state == VL53LX_HIST_DMA_READING) {
-		if ((HAL_GetTick() - vl53lx_hist_dma_start_tick) > VL53LX_HIST_DMA_TIMEOUT_MS) {
-			vl53lx_hist_dma_state = VL53LX_HIST_DMA_IDLE;
-			return VL53LX_ERROR_TIME_OUT;
-		}
-		return VL53LX_ERROR_TIME_OUT;
-	}
-
-	if (HAL_FMPI2C_Mem_Read_DMA(&hfmpi2c1,
-			Dev->IO.Address,
-			VL53LX_HISTOGRAM_BIN_DATA_I2C_INDEX,
-			FMPI2C_MEMADD_SIZE_16BIT,
-			*ppbuffer,
-			VL53LX_HISTOGRAM_BIN_DATA_I2C_SIZE_BYTES) != HAL_OK) {
-		return VL53LX_ERROR_CONTROL_INTERFACE;
-	}
-
-	vl53lx_hist_dma_start_tick = HAL_GetTick();
-	vl53lx_hist_dma_state = VL53LX_HIST_DMA_READING;
-	return VL53LX_ERROR_TIME_OUT;
-}
-
-void HAL_FMPI2C_MemRxCpltCallback(FMPI2C_HandleTypeDef *hfmpi2c)
-{
-	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_hist_dma_state == VL53LX_HIST_DMA_READING)) {
-		vl53lx_hist_dma_state = VL53LX_HIST_DMA_DONE;
-		g_flag.system |= FLAG_VL53CX_IRQ;
-	}
-}
-
-void HAL_FMPI2C_MemTxCpltCallback(FMPI2C_HandleTypeDef *hfmpi2c)
-{
-	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_write_dma_state == VL53LX_WRITE_DMA_WRITING)) {
-		vl53lx_write_dma_state = VL53LX_WRITE_DMA_DONE;
-		g_flag.system |= FLAG_VL53CX_IRQ;
-	}
-}
-
-void HAL_FMPI2C_ErrorCallback(FMPI2C_HandleTypeDef *hfmpi2c)
-{
-	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_hist_dma_state == VL53LX_HIST_DMA_READING)) {
-		vl53lx_hist_dma_state = VL53LX_HIST_DMA_ERROR;
-		g_flag.system |= FLAG_VL53CX_IRQ;
-	}
-
-	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_write_dma_state == VL53LX_WRITE_DMA_WRITING)) {
-		vl53lx_write_dma_state = VL53LX_WRITE_DMA_ERROR;
-		g_flag.system |= FLAG_VL53CX_IRQ;
-	}
-}
-
-
 static VL53LX_Error select_offset_per_vcsel(VL53LX_LLDriverData_t *pdev,
 		int16_t *poffset) {
 	VL53LX_Error status = VL53LX_ERROR_NONE;
@@ -2034,11 +1895,12 @@ VL53LX_Error VL53LX_init_and_start_range(
 
 
 	if (status == VL53LX_ERROR_NONE) {
-		status = vl53lx_write_multi_dma_blocking(
+		status =
+			VL53LX_WriteMulti(
 				Dev,
 				i2c_index,
 				buffer,
-				i2c_buffer_size_bytes);
+				(uint32_t)i2c_buffer_size_bytes);
 	}
 
 
@@ -2682,8 +2544,8 @@ VL53LX_Error VL53LX_get_histogram_bin_data(
 	VL53LX_timing_config_t        *ptim_cfg  = &(pdev->tim_cfg);
 	VL53LX_range_results_t        *presults  = &(pres->range_results);
 
-	uint8_t   *pbuffer = 0;
-	uint8_t   *buffer = 0;
+	static uint8_t    buffer[VL53LX_MAX_I2C_XFER_SIZE];
+	uint8_t   *pbuffer = &buffer[0];
 	uint8_t    bin_23_0 = 0x00;
 	uint16_t   bin                      = 0;
 	uint16_t   i2c_buffer_offset_bytes  = 0;
@@ -2701,15 +2563,11 @@ VL53LX_Error VL53LX_get_histogram_bin_data(
 
 
 	if (status == VL53LX_ERROR_NONE)
-		status = vl53lx_read_histogram_dma(Dev, &pbuffer);
-
-	if (status != VL53LX_ERROR_NONE)
-	{
-		LOG_FUNCTION_END(status);
-		return status;
-	}
-
-	buffer = pbuffer;
+		status = VL53LX_ReadMulti(
+			Dev,
+			VL53LX_HISTOGRAM_BIN_DATA_I2C_INDEX,
+			pbuffer,
+			VL53LX_HISTOGRAM_BIN_DATA_I2C_SIZE_BYTES);
 
 
 

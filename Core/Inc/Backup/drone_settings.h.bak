@@ -1,0 +1,27 @@
+/*
+ * drone_settings.h
+ *
+ *  Created on: Feb 6, 2026
+ *      Author: trinh
+ */
+
+#ifndef INC_DRONE_SETTINGS_H_
+#define INC_DRONE_SETTINGS_H_
+#include "stm32f4xx_hal.h"
+/* ===== I2C ===== */
+extern I2C_HandleTypeDef *hi2c3_IMU;
+
+/* ===== SPI ===== */
+extern SPI_HandleTypeDef *hspi1_RF24;
+
+/* ===== TIM ===== */
+extern TIM_HandleTypeDef *htim2_motor_pwm;
+extern TIM_HandleTypeDef *htim3_receiver_pwm;
+extern TIM_HandleTypeDef *htim5_encoder;
+
+
+extern ADC_HandleTypeDef *hadc1_Vbat;
+/* ===== DMA ===== */
+extern DMA_HandleTypeDef *hdma_V;
+
+#endif /* INC_DRONE_SETTINGS_H_ */

@@ -6,7 +6,7 @@
 
 extern long tof_last_distance_mm;
 
-void TOF_Init(void);
+int32_t TOF_Init(void);
 void TOF_distance(long *distance);
 
 #endif /* DRIVERS_SENSOR_TOF_H_ */
