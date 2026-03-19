@@ -8,6 +8,7 @@
 #include "custom_ranging_sensor.h"
 
 long tof_last_distance_mm = 0;
+volatile uint8_t tof_enabled = 1U;
 
 RANGING_SENSOR_ProfileConfig_t Profile;
 RANGING_SENSOR_Result_t Result;

@@ -33,6 +33,7 @@
 #include "vl53lx_tuning_parm_defaults.h"
 #include "fmpi2c.h"
 #include "controller_scheduler.h"
+#include "TOF/tof.h"
 #include <stdio.h>
 
 #ifdef VL53LX_LOG_ENABLE
@@ -117,7 +118,10 @@ void HAL_FMPI2C_MemRxCpltCallback(FMPI2C_HandleTypeDef *hfmpi2c)
 {
 	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_hist_dma_active != 0U)) {
 		vl53lx_hist_dma_done = 1U;
-		Scheduler_SetFlagFromISR(FLAG_VL53CX_IRQ);
+		if (tof_enabled)
+		{
+			Scheduler_SetFlagFromISR(FLAG_VL53CX_IRQ);
+		}
 	}
 }
 
@@ -125,7 +129,10 @@ void HAL_FMPI2C_ErrorCallback(FMPI2C_HandleTypeDef *hfmpi2c)
 {
 	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_hist_dma_active != 0U)) {
 		vl53lx_hist_dma_error = 1U;
-		Scheduler_SetFlagFromISR(FLAG_VL53CX_IRQ);
+		if (tof_enabled)
+		{
+			Scheduler_SetFlagFromISR(FLAG_VL53CX_IRQ);
+		}
 	}
 }
 

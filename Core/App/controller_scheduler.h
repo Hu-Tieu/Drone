@@ -57,6 +57,14 @@ typedef struct
 
 extern volatile flag_t g_flag;
 
+/* Runtime phase-shift configuration (microseconds) for non-rate loops.
+ * Effective resolution is one scheduler tick: 1e6 / SCHEDULER_BASE_HZ (625us at 1600Hz).
+ */
+extern volatile uint32_t g_phase_angle_us;
+extern volatile uint32_t g_phase_velocity_us;
+extern volatile uint32_t g_phase_position_us;
+extern volatile uint32_t g_phase_lower_us;
+
 /* Return one ready flag with highest priority. Returns 0 when no task is ready. */
 system_flag_t Scheduler_SelectHighestPriority(system_flag_t ready_flags);
 
@@ -82,6 +90,11 @@ uint32_t Scheduler_GetLastLatencyUs(system_flag_t flag);
 
 /* Pop the worst latency (us) observed since last pop (clears stored worst). */
 uint32_t Scheduler_PopWorstLatencyUs(system_flag_t flag);
+
+/* Pop the DWT cycle timestamp (stored when worst-latency was updated).
+ * Returns 0 if none recorded; caller may convert cycles->us using SystemCoreClock.
+ */
+uint32_t Scheduler_PopWorstUpdateCycle(system_flag_t flag);
 
 /* Pop counters accumulated since last pop: miss count and error count. */
 uint32_t Scheduler_PopMissCount(system_flag_t flag);

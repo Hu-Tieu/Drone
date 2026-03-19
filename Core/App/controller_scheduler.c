@@ -11,6 +11,14 @@
 
 volatile flag_t g_flag;
 
+/* Phase-shift knobs (microseconds) for non-rate loops.
+ * Defaults spread events to reduce same-tick collisions; users can tune at runtime.
+ */
+volatile uint32_t g_phase_angle_us = 10U;
+volatile uint32_t g_phase_velocity_us = 1250U;
+volatile uint32_t g_phase_position_us = 2500U;
+volatile uint32_t g_phase_lower_us = 3750U;
+
 #define FLAG_INDEX_COUNT              (32U)
 
 static volatile uint32_t g_flag_set_cycle[FLAG_INDEX_COUNT] = {0U};
@@ -23,6 +31,7 @@ static uint32_t g_flag_last_interval_cycles[FLAG_INDEX_COUNT] = {0U};
 static uint32_t g_flag_worst_interval_cycles[FLAG_INDEX_COUNT] = {0U};
 static uint32_t g_flag_last_latency_us[FLAG_INDEX_COUNT] = {0U};
 static uint32_t g_flag_worst_latency_us[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_flag_worst_update_cycle[FLAG_INDEX_COUNT] = {0U};
 static uint32_t g_flag_miss_count[FLAG_INDEX_COUNT] = {0U};
 static uint32_t g_flag_error_count[FLAG_INDEX_COUNT] = {0U};
 
@@ -35,6 +44,65 @@ static uint32_t scheduler_cycles_to_us(uint32_t cycles)
     }
 
     return (cycles / cycles_per_us);
+}
+
+static uint32_t scheduler_phase_us_to_tick_offset(uint32_t phase_us, uint32_t divider)
+{
+    uint32_t tick_us;
+    uint32_t phase_ticks;
+
+    if (divider == 0U)
+    {
+        return 0U;
+    }
+
+    tick_us = (1000000U / SCHEDULER_BASE_HZ);
+    if (tick_us == 0U)
+    {
+        return 0U;
+    }
+
+    phase_ticks = (phase_us / tick_us);
+    return (phase_ticks % divider);
+}
+
+static uint32_t scheduler_miss_threshold_us(system_flag_t flag)
+{
+    switch (flag)
+    {
+    case FLAG_RATE_LOOP:
+        return (1000000U / RATE_LOOP_HZ);
+    case FLAG_ANGLE_LOOP:
+        return (1000000U / ANGLE_LOOP_HZ);
+    case FLAG_VELOCITY_LOOP:
+        return (1000000U / VELOCITY_LOOP_HZ);
+    case FLAG_POSITION_LOOP:
+        return (1000000U / POSITION_LOOP_HZ);
+    case FLAG_LOWER_LOOP:
+        return (1000000U / LOWER_LOOP_HZ);
+    default:
+        /* Keep legacy threshold for non-loop flags. */
+        return 40U;
+    }
+}
+
+static uint32_t scheduler_expected_period_us(system_flag_t flag)
+{
+    switch (flag)
+    {
+    case FLAG_RATE_LOOP:
+        return (1000000U / RATE_LOOP_HZ);
+    case FLAG_ANGLE_LOOP:
+        return (1000000U / ANGLE_LOOP_HZ);
+    case FLAG_VELOCITY_LOOP:
+        return (1000000U / VELOCITY_LOOP_HZ);
+    case FLAG_POSITION_LOOP:
+        return (1000000U / POSITION_LOOP_HZ);
+    case FLAG_LOWER_LOOP:
+        return (1000000U / LOWER_LOOP_HZ);
+    default:
+        return 0U;
+    }
 }
 
 /* helper used by the public accessors below */
@@ -90,6 +158,15 @@ uint32_t Scheduler_PopWorstLatencyUs(system_flag_t flag)
     return v;
 }
 
+uint32_t Scheduler_PopWorstUpdateCycle(system_flag_t flag)
+{
+    int32_t idx = scheduler_flag_to_index(flag);
+    if (idx < 0) return 0U;
+    uint32_t v = g_flag_worst_update_cycle[(uint32_t)idx];
+    g_flag_worst_update_cycle[(uint32_t)idx] = 0U;
+    return v;
+}
+
 uint32_t Scheduler_PopMissCount(system_flag_t flag)
 {
     int32_t idx = scheduler_flag_to_index(flag);
@@ -109,26 +186,6 @@ uint32_t Scheduler_PopErrorCount(system_flag_t flag)
 }
 
 
-
-static const char *scheduler_flag_name(system_flag_t flag)
-{
-    switch (flag)
-    {
-    case FLAG_RATE_LOOP: return "RATE";
-    case FLAG_ANGLE_LOOP: return "ANGLE";
-    case FLAG_VELOCITY_LOOP: return "VEL";
-    case FLAG_POSITION_LOOP: return "POS";
-    case FLAG_LOWER_LOOP: return "LOWER";
-    case FLAG_RPM_HALF: return "RPM_HALF";
-    case FLAG_RPM_FULL: return "RPM_FULL";
-    case FLAG_RF24_IRQ: return "RF24";
-    case FLAG_VL53CX_IRQ: return "TOF";
-    case FLAG_VBAT_HALF_UPDATE: return "VBAT_HALF";
-    case FLAG_VBAT_FULL_UPDATE: return "VBAT_FULL";
-    case FLAG_GYRO_UPDATE: return "GYRO";
-    default: return "UNKNOWN";
-    }
-}
 
 static void Scheduler_SetFlagWithTimestamp(system_flag_t flag)
 {
@@ -171,6 +228,7 @@ void Scheduler_ReportTaskDelayAndClear(system_flag_t flag)
     __disable_irq();
     set_cycles = g_flag_set_cycle[(uint32_t)idx];
     resent_count = g_flag_resent_count[(uint32_t)idx];
+    g_flag.system &= ~flag;
     g_flag_set_cycle[(uint32_t)idx] = 0U;
     g_flag_resent_count[(uint32_t)idx] = 0U;
     __enable_irq();
@@ -187,6 +245,20 @@ void Scheduler_ReportTaskDelayAndClear(system_flag_t flag)
             {
                 g_flag_worst_interval_cycles[(uint32_t)idx] = interval;
             }
+
+            /* interval-based miss: count skipped periods between two consecutive set events */
+            {
+                uint32_t period_us = scheduler_expected_period_us(flag);
+                if (period_us != 0U)
+                {
+                    uint32_t interval_us = scheduler_cycles_to_us(interval);
+                    if (interval_us > period_us)
+                    {
+                        uint32_t skipped = (interval_us - 1U) / period_us;
+                        g_flag_miss_count[(uint32_t)idx] += skipped;
+                    }
+                }
+            }
         }
         g_flag_prev_set_cycle[(uint32_t)idx] = set_cycles;
     }
@@ -201,9 +273,10 @@ void Scheduler_ReportTaskDelayAndClear(system_flag_t flag)
         if (latency_us > g_flag_worst_latency_us[(uint32_t)idx])
         {
             g_flag_worst_latency_us[(uint32_t)idx] = latency_us;
+            g_flag_worst_update_cycle[(uint32_t)idx] = now_cycles;
         }
-        /* count miss when latency exceeds threshold (10us) */
-        if (latency_us > 10U)
+        /* count miss when latency exceeds loop-specific deadline */
+        if (latency_us > scheduler_miss_threshold_us(flag))
         {
             g_flag_miss_count[(uint32_t)idx]++;
         }
@@ -221,8 +294,6 @@ void Scheduler_RecordTaskExecCycles(system_flag_t flag, uint32_t exec_cycles)
 {
     int32_t idx = scheduler_flag_to_index(flag);
     uint32_t exec_us;
-    uint32_t now_ms;
-    uint32_t i;
 
     if (idx < 0)
     {
@@ -230,11 +301,6 @@ void Scheduler_RecordTaskExecCycles(system_flag_t flag, uint32_t exec_cycles)
     }
 
     exec_us = scheduler_cycles_to_us(exec_cycles);
-
-    printf("[TASK] %s exec=%lu us\r\n",
-           scheduler_flag_name(flag),
-           (unsigned long)exec_us);
-
     if (exec_us > g_task_worst_exec_us[(uint32_t)idx])
     {
         g_task_worst_exec_us[(uint32_t)idx] = exec_us;
@@ -242,26 +308,6 @@ void Scheduler_RecordTaskExecCycles(system_flag_t flag, uint32_t exec_cycles)
     if (g_task_exec_count[(uint32_t)idx] < 0xFFFFU)
     {
         g_task_exec_count[(uint32_t)idx]++;
-    }
-
-    now_ms = HAL_GetTick();
-    if ((now_ms - g_last_worst_report_ms) >= 1000U)
-    {
-        g_last_worst_report_ms = now_ms;
-        printf("[TASK_WORST_1S]");
-        for (i = 0U; i < FLAG_INDEX_COUNT; i++)
-        {
-            system_flag_t f = (system_flag_t)(1UL << i);
-            if (g_task_exec_count[i] > 0U)
-            {
-                printf(" %s=%luus",
-                       scheduler_flag_name(f),
-                       (unsigned long)g_task_worst_exec_us[i]);
-                g_task_worst_exec_us[i] = 0U;
-                g_task_exec_count[i] = 0U;
-            }
-        }
-        printf("\r\n");
     }
 }
 
@@ -299,29 +345,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (htim->Instance != TIM6)
         return;
 
+    static uint32_t scheduler_tick = 0U;
     static uint16_t div_gyro        = 0;
     static uint16_t div_rate        = 0;
-    static uint16_t div_angle       = 0;
-    static uint16_t div_velocity    = 0;
-    static uint16_t div_position    = 0;
-    static uint16_t div_lower       = 0;
-    static system_flag_t deferred_flags = 0U;
-    static uint8_t deferred_rr_index = 0U;
-    static const system_flag_t deferred_order[] = {
-        FLAG_ANGLE_LOOP,
-        FLAG_VELOCITY_LOOP,
-        FLAG_POSITION_LOOP,
-        FLAG_LOWER_LOOP
-    };
-    uint8_t critical_set = 0U;
-    uint32_t i;
+    uint32_t tick;
+    uint32_t angle_phase_tick;
+    uint32_t velocity_phase_tick;
+    uint32_t position_phase_tick;
+    uint32_t lower_phase_tick;
+
+    tick = scheduler_tick;
+    scheduler_tick++;
     
     /* ===================== GYRO UPDATE ===================== */
     if (++div_gyro>= DIV_GYRO_UPDATE)
     {
         div_gyro = 0;
         Scheduler_SetFlagWithTimestamp(FLAG_GYRO_UPDATE);
-        critical_set = 1U;
     }
     
 
@@ -330,50 +370,35 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     {
         div_rate = 0;
         Scheduler_SetFlagWithTimestamp(FLAG_RATE_LOOP);
-        critical_set = 1U;
     }
 
-    /* ================= ANGLE LOOP ================= */
-    if (++div_angle >= DIV_ANGLE_LOOP)
+    angle_phase_tick = scheduler_phase_us_to_tick_offset(g_phase_angle_us, DIV_ANGLE_LOOP);
+    velocity_phase_tick = scheduler_phase_us_to_tick_offset(g_phase_velocity_us, DIV_VELOCITY_LOOP);
+    position_phase_tick = scheduler_phase_us_to_tick_offset(g_phase_position_us, DIV_POSITION_LOOP);
+    lower_phase_tick = scheduler_phase_us_to_tick_offset(g_phase_lower_us, DIV_LOWER_LOOP);
+
+    /* ================= ANGLE LOOP (phase-shifted) ================= */
+    if ((tick % DIV_ANGLE_LOOP) == angle_phase_tick)
     {
-        div_angle = 0;
-        deferred_flags |= FLAG_ANGLE_LOOP;
+        Scheduler_SetFlagWithTimestamp(FLAG_ANGLE_LOOP);
     }
 
-    /* ================= VELOCITY LOOP ================= */
-    if (++div_velocity >= DIV_VELOCITY_LOOP)
+    /* ================= VELOCITY LOOP (phase-shifted) ================= */
+    if ((tick % DIV_VELOCITY_LOOP) == velocity_phase_tick)
     {
-        div_velocity = 0;
-        deferred_flags |= FLAG_VELOCITY_LOOP;
-    }
-    if (++div_position >= DIV_POSITION_LOOP)
-    {
-        div_position = 0;
-        deferred_flags |= FLAG_POSITION_LOOP;
-    }
-    /* ================= LOWER LOOP ================= */
-    if (++div_lower >= DIV_LOWER_LOOP)
-    {
-        div_lower = 0;
-        deferred_flags |= FLAG_LOWER_LOOP;
+        Scheduler_SetFlagWithTimestamp(FLAG_VELOCITY_LOOP);
     }
 
-    /* Emit at most one non-critical flag per tick, and never on GYRO/RATE ticks. */
-    if ((critical_set == 0U) && (deferred_flags != 0U))
+    /* ================= POSITION LOOP (phase-shifted) ================= */
+    if ((tick % DIV_POSITION_LOOP) == position_phase_tick)
     {
-        for (i = 0U; i < (sizeof(deferred_order) / sizeof(deferred_order[0])); i++)
-        {
-            uint8_t idx = (uint8_t)((deferred_rr_index + i) % (sizeof(deferred_order) / sizeof(deferred_order[0])));
-            system_flag_t flag = deferred_order[idx];
+        Scheduler_SetFlagWithTimestamp(FLAG_POSITION_LOOP);
+    }
 
-            if ((deferred_flags & flag) != 0U)
-            {
-                Scheduler_SetFlagWithTimestamp(flag);
-                deferred_flags &= ~flag;
-                deferred_rr_index = (uint8_t)((idx + 1U) % (sizeof(deferred_order) / sizeof(deferred_order[0])));
-                break;
-            }
-        }
+    /* ================= LOWER LOOP (phase-shifted) ================= */
+    if ((tick % DIV_LOWER_LOOP) == lower_phase_tick)
+    {
+        Scheduler_SetFlagWithTimestamp(FLAG_LOWER_LOOP);
     }
 }
 
@@ -399,10 +424,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
     if(GPIO_Pin == RF24_IRQ_Pin){
                 Scheduler_SetFlagWithTimestamp(FLAG_RF24_IRQ);
     }
-      if (GPIO_Pin == VL53CX_IRQ_Pin)
+    if (GPIO_Pin == VL53CX_IRQ_Pin)
   {
+      if (tof_enabled)
+      {
         Scheduler_SetFlagWithTimestamp(FLAG_VL53CX_IRQ);
-    
+      }
   }
 }
 
