@@ -16,6 +16,9 @@ volatile flag_t g_flag;
 
 static volatile uint32_t g_flag_set_cycle[FLAG_INDEX_COUNT] = {0U};
 static volatile uint16_t g_flag_resent_count[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_task_worst_exec_us[FLAG_INDEX_COUNT] = {0U};
+static uint16_t g_task_exec_count[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_last_worst_report_ms = 0U;
 
 static uint32_t scheduler_cycles_to_us(uint32_t cycles)
 {
@@ -117,18 +120,61 @@ void Scheduler_ReportTaskDelayAndClear(system_flag_t flag)
         delay_us = scheduler_cycles_to_us(now_cycles - set_cycles);
         if (delay_us > SCHEDULER_MISS_THRESHOLD_US)
         {
-            printf("[SCHED_MISS] %s delay=%lu us (thr=%lu us)\r\n",
-                   scheduler_flag_name(flag),
-                   (unsigned long)delay_us,
-                   (unsigned long)SCHEDULER_MISS_THRESHOLD_US);
+            (void)delay_us;
         }
     }
 
     if (resent_count > 0U)
     {
-        printf("[SCHED_ERR] %s set again before handled (%u)\r\n",
-               scheduler_flag_name(flag),
-               (unsigned int)resent_count);
+        (void)resent_count;
+    }
+}
+
+void Scheduler_RecordTaskExecCycles(system_flag_t flag, uint32_t exec_cycles)
+{
+    int32_t idx = scheduler_flag_to_index(flag);
+    uint32_t exec_us;
+    uint32_t now_ms;
+    uint32_t i;
+
+    if (idx < 0)
+    {
+        return;
+    }
+
+    exec_us = scheduler_cycles_to_us(exec_cycles);
+
+    printf("[TASK] %s exec=%lu us\r\n",
+           scheduler_flag_name(flag),
+           (unsigned long)exec_us);
+
+    if (exec_us > g_task_worst_exec_us[(uint32_t)idx])
+    {
+        g_task_worst_exec_us[(uint32_t)idx] = exec_us;
+    }
+    if (g_task_exec_count[(uint32_t)idx] < 0xFFFFU)
+    {
+        g_task_exec_count[(uint32_t)idx]++;
+    }
+
+    now_ms = HAL_GetTick();
+    if ((now_ms - g_last_worst_report_ms) >= 1000U)
+    {
+        g_last_worst_report_ms = now_ms;
+        printf("[TASK_WORST_1S]");
+        for (i = 0U; i < FLAG_INDEX_COUNT; i++)
+        {
+            system_flag_t f = (system_flag_t)(1UL << i);
+            if (g_task_exec_count[i] > 0U)
+            {
+                printf(" %s=%luus",
+                       scheduler_flag_name(f),
+                       (unsigned long)g_task_worst_exec_us[i]);
+                g_task_worst_exec_us[i] = 0U;
+                g_task_exec_count[i] = 0U;
+            }
+        }
+        printf("\r\n");
     }
 }
 
@@ -172,12 +218,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     static uint16_t div_velocity    = 0;
     static uint16_t div_position    = 0;
     static uint16_t div_lower       = 0;
+    static system_flag_t deferred_flags = 0U;
+    static uint8_t deferred_rr_index = 0U;
+    static const system_flag_t deferred_order[] = {
+        FLAG_ANGLE_LOOP,
+        FLAG_VELOCITY_LOOP,
+        FLAG_POSITION_LOOP,
+        FLAG_LOWER_LOOP
+    };
+    uint8_t critical_set = 0U;
+    uint32_t i;
     
     /* ===================== GYRO UPDATE ===================== */
     if (++div_gyro>= DIV_GYRO_UPDATE)
     {
         div_gyro = 0;
         Scheduler_SetFlagWithTimestamp(FLAG_GYRO_UPDATE);
+        critical_set = 1U;
     }
     
 
@@ -186,31 +243,50 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     {
         div_rate = 0;
         Scheduler_SetFlagWithTimestamp(FLAG_RATE_LOOP);
+        critical_set = 1U;
     }
 
     /* ================= ANGLE LOOP ================= */
     if (++div_angle >= DIV_ANGLE_LOOP)
     {
         div_angle = 0;
-        Scheduler_SetFlagWithTimestamp(FLAG_ANGLE_LOOP);
+        deferred_flags |= FLAG_ANGLE_LOOP;
     }
 
     /* ================= VELOCITY LOOP ================= */
     if (++div_velocity >= DIV_VELOCITY_LOOP)
     {
         div_velocity = 0;
-        Scheduler_SetFlagWithTimestamp(FLAG_VELOCITY_LOOP);
+        deferred_flags |= FLAG_VELOCITY_LOOP;
     }
     if (++div_position >= DIV_POSITION_LOOP)
     {
         div_position = 0;
-        Scheduler_SetFlagWithTimestamp(FLAG_POSITION_LOOP);
+        deferred_flags |= FLAG_POSITION_LOOP;
     }
     /* ================= LOWER LOOP ================= */
     if (++div_lower >= DIV_LOWER_LOOP)
     {
         div_lower = 0;
-        Scheduler_SetFlagWithTimestamp(FLAG_LOWER_LOOP);
+        deferred_flags |= FLAG_LOWER_LOOP;
+    }
+
+    /* Emit at most one non-critical flag per tick, and never on GYRO/RATE ticks. */
+    if ((critical_set == 0U) && (deferred_flags != 0U))
+    {
+        for (i = 0U; i < (sizeof(deferred_order) / sizeof(deferred_order[0])); i++)
+        {
+            uint8_t idx = (uint8_t)((deferred_rr_index + i) % (sizeof(deferred_order) / sizeof(deferred_order[0])));
+            system_flag_t flag = deferred_order[idx];
+
+            if ((deferred_flags & flag) != 0U)
+            {
+                Scheduler_SetFlagWithTimestamp(flag);
+                deferred_flags &= ~flag;
+                deferred_rr_index = (uint8_t)((idx + 1U) % (sizeof(deferred_order) / sizeof(deferred_order[0])));
+                break;
+            }
+        }
     }
 }
 

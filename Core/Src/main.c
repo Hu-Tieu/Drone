@@ -133,7 +133,10 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 while (1)
 {
         static uint32_t pending_flags = 0U;
-
+  static uint32_t main_loop_worst_cycles = 0U;
+  static uint32_t main_loop_last_report_ms = 0U;
+  uint32_t main_loop_start_cycles = DWT->CYCCNT;
+  uint32_t main_loop_exec_cycles;
     /* ===== Atomic snapshot ===== */
     __disable_irq();
         pending_flags |= g_flag.system;
@@ -141,9 +144,9 @@ while (1)
     __enable_irq();
 
     if (pending_flags == 0U)
-        {
-        continue;
-        }
+    {
+      goto MAIN_LOOP_TIMING;
+    }
 
     /* ===================== RF24 IRQ ===================== */
     if ((pending_flags & FLAG_RF24_IRQ) != 0U)
@@ -276,6 +279,26 @@ while (1)
         {
             pending_flags &= ~FLAG_LOWER_LOOP;
             Scheduler_ReportTaskDelayAndClear(FLAG_LOWER_LOOP);
+        }
+
+    MAIN_LOOP_TIMING:
+        main_loop_exec_cycles = DWT->CYCCNT - main_loop_start_cycles;
+        if (main_loop_exec_cycles > main_loop_worst_cycles)
+        {
+          main_loop_worst_cycles = main_loop_exec_cycles;
+        }
+
+        if ((HAL_GetTick() - main_loop_last_report_ms) >= 1000U)
+        {
+          uint32_t cycles_per_us = (SystemCoreClock / 1000000U);
+          uint32_t worst_us = 0U;
+          if (cycles_per_us != 0U)
+          {
+            worst_us = main_loop_worst_cycles / cycles_per_us;
+          }
+          printf("[MAIN_LOOP_WORST_1S] %lu us\r\n", (unsigned long)worst_us);
+          main_loop_worst_cycles = 0U;
+          main_loop_last_report_ms = HAL_GetTick();
         }
 }
     /* USER CODE END WHILE */

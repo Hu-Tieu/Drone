@@ -2,7 +2,7 @@
 #define DRIVERS_SENSOR_TOF_H_
 
 #include <stdint.h>
-#define TIMING_BUDGET           (500U)
+#define TIMING_BUDGET           (100U)
 
 extern long tof_last_distance_mm;
 

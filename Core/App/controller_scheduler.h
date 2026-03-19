@@ -63,4 +63,7 @@ system_flag_t Scheduler_SelectHighestPriority(system_flag_t ready_flags);
 /* Called in main loop when a flagged task is about to run. */
 void Scheduler_ReportTaskDelayAndClear(system_flag_t flag);
 
+/* Record execution time (in DWT cycles) for a task instance. */
+void Scheduler_RecordTaskExecCycles(system_flag_t flag, uint32_t exec_cycles);
+
 #endif
