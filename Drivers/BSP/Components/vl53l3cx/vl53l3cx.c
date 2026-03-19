@@ -364,7 +364,12 @@ int32_t VL53L3CX_GetDistance(VL53L3CX_Object_t *pObj, VL53L3CX_Result_t *pResult
 
   if (ret == VL53L3CX_OK)
   {
-    if (vl53l3cx_get_result(pObj, pResult) != VL53L3CX_OK)
+    ret = vl53l3cx_get_result(pObj, pResult);
+    if (ret == VL53L3CX_TIMEOUT)
+    {
+      return VL53L3CX_TIMEOUT;
+    }
+    if (ret != VL53L3CX_OK)
     {
       ret = VL53L3CX_ERROR;
     }

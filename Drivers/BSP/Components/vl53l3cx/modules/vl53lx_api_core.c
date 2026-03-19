@@ -33,6 +33,7 @@
 #include "vl53lx_tuning_parm_defaults.h"
 #include "fmpi2c.h"
 #include "controller_scheduler.h"
+#include <stdio.h>
 
 #ifdef VL53LX_LOG_ENABLE
 #include "vl53lx_api_debug.h"
@@ -51,6 +52,84 @@
 	level, VL53LX_TRACE_FUNCTION_NONE, ##__VA_ARGS__)
 
 #define VL53LX_MAX_I2C_XFER_SIZE 256
+#define VL53LX_HIST_DMA_TIMEOUT_MS 20U
+
+static volatile uint8_t vl53lx_hist_dma_active = 0U;
+static volatile uint8_t vl53lx_hist_dma_done = 0U;
+static volatile uint8_t vl53lx_hist_dma_error = 0U;
+static uint32_t vl53lx_hist_dma_start_tick = 0U;
+
+static VL53LX_Error vl53lx_read_histogram_dma_two_phase(
+	VL53LX_DEV Dev,
+	uint16_t index,
+	uint8_t *pbuffer,
+	uint16_t size)
+{
+	if ((Dev == NULL) || (pbuffer == NULL) || (size == 0U))
+		return VL53LX_ERROR_INVALID_PARAMS;
+
+	/* Phase 1: trigger DMA transfer and return immediately. */
+	if (vl53lx_hist_dma_active == 0U) {
+		vl53lx_hist_dma_done = 0U;
+		vl53lx_hist_dma_error = 0U;
+		vl53lx_hist_dma_active = 1U;
+
+		if (HAL_FMPI2C_Mem_Read_DMA(&hfmpi2c1,
+				Dev->IO.Address,
+				index,
+				FMPI2C_MEMADD_SIZE_16BIT,
+				pbuffer,
+				size) != HAL_OK) {
+			vl53lx_hist_dma_active = 0U;
+			return VL53LX_ERROR_CONTROL_INTERFACE;
+		}
+
+		vl53lx_hist_dma_start_tick = HAL_GetTick();
+		return VL53LX_ERROR_TIME_OUT;
+	}
+
+	/* Phase 2: caller retries; report completion/error/timeout status. */
+	if (vl53lx_hist_dma_error != 0U) {
+		vl53lx_hist_dma_active = 0U;
+		vl53lx_hist_dma_done = 0U;
+		vl53lx_hist_dma_error = 0U;
+		return VL53LX_ERROR_CONTROL_INTERFACE;
+	}
+
+	if (vl53lx_hist_dma_done != 0U) {
+		vl53lx_hist_dma_active = 0U;
+		vl53lx_hist_dma_done = 0U;
+		vl53lx_hist_dma_error = 0U;
+		return VL53LX_ERROR_NONE;
+	}
+
+	if ((HAL_GetTick() - vl53lx_hist_dma_start_tick) > VL53LX_HIST_DMA_TIMEOUT_MS) {
+		vl53lx_hist_dma_active = 0U;
+		vl53lx_hist_dma_done = 0U;
+		vl53lx_hist_dma_error = 0U;
+		return VL53LX_ERROR_TIME_OUT;
+	}
+
+	return VL53LX_ERROR_TIME_OUT;
+}
+
+void HAL_FMPI2C_MemRxCpltCallback(FMPI2C_HandleTypeDef *hfmpi2c)
+{
+	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_hist_dma_active != 0U)) {
+		vl53lx_hist_dma_done = 1U;
+		Scheduler_SetFlagFromISR(FLAG_VL53CX_IRQ);
+		printf("[TOF_DMA] MemRxCplt OK\r\n");
+	}
+}
+
+void HAL_FMPI2C_ErrorCallback(FMPI2C_HandleTypeDef *hfmpi2c)
+{
+	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_hist_dma_active != 0U)) {
+		vl53lx_hist_dma_error = 1U;
+		Scheduler_SetFlagFromISR(FLAG_VL53CX_IRQ);
+	}
+}
+
 static VL53LX_Error select_offset_per_vcsel(VL53LX_LLDriverData_t *pdev,
 		int16_t *poffset) {
 	VL53LX_Error status = VL53LX_ERROR_NONE;
@@ -2563,11 +2642,16 @@ VL53LX_Error VL53LX_get_histogram_bin_data(
 
 
 	if (status == VL53LX_ERROR_NONE)
-		status = VL53LX_ReadMulti(
+		status = vl53lx_read_histogram_dma_two_phase(
 			Dev,
 			VL53LX_HISTOGRAM_BIN_DATA_I2C_INDEX,
 			pbuffer,
 			VL53LX_HISTOGRAM_BIN_DATA_I2C_SIZE_BYTES);
+
+	if (status != VL53LX_ERROR_NONE) {
+		LOG_FUNCTION_END(status);
+		return status;
+	}
 
 
 

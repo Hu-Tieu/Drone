@@ -65,6 +65,7 @@ extern DMA_HandleTypeDef hdma_tim5_ch2;
 extern TIM_HandleTypeDef htim5;
 extern TIM_HandleTypeDef htim6;
 extern DMA_HandleTypeDef hdma_uart5_rx;
+extern FMPI2C_HandleTypeDef hfmpi2c1;
 extern UART_HandleTypeDef huart5;
 /* USER CODE BEGIN EV */
 
@@ -305,6 +306,34 @@ void TIM5_IRQHandler(void)
   /* USER CODE BEGIN TIM5_IRQn 1 */
 
   /* USER CODE END TIM5_IRQn 1 */
+}
+
+/**
+  * @brief This function handles FMPI2C1 event interrupt.
+  */
+void FMPI2C1_EV_IRQHandler(void)
+{
+  /* USER CODE BEGIN FMPI2C1_EV_IRQn 0 */
+
+  /* USER CODE END FMPI2C1_EV_IRQn 0 */
+  HAL_FMPI2C_EV_IRQHandler(&hfmpi2c1);
+  /* USER CODE BEGIN FMPI2C1_EV_IRQn 1 */
+
+  /* USER CODE END FMPI2C1_EV_IRQn 1 */
+}
+
+/**
+  * @brief This function handles FMPI2C1 error interrupt.
+  */
+void FMPI2C1_ER_IRQHandler(void)
+{
+  /* USER CODE BEGIN FMPI2C1_ER_IRQn 0 */
+
+  /* USER CODE END FMPI2C1_ER_IRQn 0 */
+  HAL_FMPI2C_ER_IRQHandler(&hfmpi2c1);
+  /* USER CODE BEGIN FMPI2C1_ER_IRQn 1 */
+
+  /* USER CODE END FMPI2C1_ER_IRQn 1 */
 }
 
 /**

@@ -132,7 +132,7 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE BEGIN WHILE */
 while (1)
 {
-        static uint32_t pending_flags = 0U;
+  static uint32_t pending_flags = 0U;
   static uint32_t main_loop_worst_cycles = 0U;
   static uint32_t main_loop_last_report_ms = 0U;
   uint32_t main_loop_start_cycles = DWT->CYCCNT;
@@ -269,9 +269,18 @@ while (1)
 
         if ((pending_flags & FLAG_VL53CX_IRQ) != 0U)
         {
+          uint32_t tof_start_cycles;
+          uint32_t tof_exec_us = 0U;
+          uint32_t cycles_per_us = (SystemCoreClock / 1000000U);
             pending_flags &= ~FLAG_VL53CX_IRQ;
             Scheduler_ReportTaskDelayAndClear(FLAG_VL53CX_IRQ);
+          tof_start_cycles = DWT->CYCCNT;
             TOF_distance(&tof_last_distance_mm);
+          if (cycles_per_us != 0U)
+          {
+            tof_exec_us = (DWT->CYCCNT - tof_start_cycles) / cycles_per_us;
+          }
+          printf("[TOF_PROC] %lu us, d=%ld mm\r\n", (unsigned long)tof_exec_us, tof_last_distance_mm);
             sys.sensor.distance = tof_last_distance_mm;
         }
 

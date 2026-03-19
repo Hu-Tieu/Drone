@@ -142,6 +142,12 @@ void HAL_FMPI2C_MspInit(FMPI2C_HandleTypeDef* fmpi2cHandle)
 
     __HAL_LINKDMA(fmpi2cHandle,hdmatx,hdma_fmpi2c1_tx);
 
+    /* FMPI2C1 interrupt Init */
+    HAL_NVIC_SetPriority(FMPI2C1_EV_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(FMPI2C1_EV_IRQn);
+    HAL_NVIC_SetPriority(FMPI2C1_ER_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(FMPI2C1_ER_IRQn);
+
   /* USER CODE BEGIN FMPI2C1_MspInit 1 */
 
   /* USER CODE END FMPI2C1_MspInit 1 */

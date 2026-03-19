@@ -93,6 +93,11 @@ static void Scheduler_SetFlagWithTimestamp(system_flag_t flag)
     g_flag.system |= flag;
 }
 
+void Scheduler_SetFlagFromISR(system_flag_t flag)
+{
+    Scheduler_SetFlagWithTimestamp(flag);
+}
+
 void Scheduler_ReportTaskDelayAndClear(system_flag_t flag)
 {
     int32_t idx = scheduler_flag_to_index(flag);
