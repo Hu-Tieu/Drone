@@ -11,7 +11,6 @@
 
 volatile flag_t g_flag;
 
-#define SCHEDULER_MISS_THRESHOLD_US   (10U)
 #define FLAG_INDEX_COUNT              (32U)
 
 static volatile uint32_t g_flag_set_cycle[FLAG_INDEX_COUNT] = {0U};
@@ -19,6 +18,13 @@ static volatile uint16_t g_flag_resent_count[FLAG_INDEX_COUNT] = {0U};
 static uint32_t g_task_worst_exec_us[FLAG_INDEX_COUNT] = {0U};
 static uint16_t g_task_exec_count[FLAG_INDEX_COUNT] = {0U};
 static uint32_t g_last_worst_report_ms = 0U;
+static uint32_t g_flag_prev_set_cycle[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_flag_last_interval_cycles[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_flag_worst_interval_cycles[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_flag_last_latency_us[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_flag_worst_latency_us[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_flag_miss_count[FLAG_INDEX_COUNT] = {0U};
+static uint32_t g_flag_error_count[FLAG_INDEX_COUNT] = {0U};
 
 static uint32_t scheduler_cycles_to_us(uint32_t cycles)
 {
@@ -31,6 +37,7 @@ static uint32_t scheduler_cycles_to_us(uint32_t cycles)
     return (cycles / cycles_per_us);
 }
 
+/* helper used by the public accessors below */
 static int32_t scheduler_flag_to_index(system_flag_t flag)
 {
     uint32_t idx;
@@ -50,6 +57,58 @@ static int32_t scheduler_flag_to_index(system_flag_t flag)
 
     return -1;
 }
+
+uint32_t Scheduler_GetLastIntervalCycles(system_flag_t flag)
+{
+    int32_t idx = scheduler_flag_to_index(flag);
+    if (idx < 0)
+        return 0U;
+    return g_flag_last_interval_cycles[(uint32_t)idx];
+}
+
+uint32_t Scheduler_GetWorstIntervalCycles(system_flag_t flag)
+{
+    int32_t idx = scheduler_flag_to_index(flag);
+    if (idx < 0)
+        return 0U;
+    return g_flag_worst_interval_cycles[(uint32_t)idx];
+}
+
+uint32_t Scheduler_GetLastLatencyUs(system_flag_t flag)
+{
+    int32_t idx = scheduler_flag_to_index(flag);
+    if (idx < 0) return 0U;
+    return g_flag_last_latency_us[(uint32_t)idx];
+}
+
+uint32_t Scheduler_PopWorstLatencyUs(system_flag_t flag)
+{
+    int32_t idx = scheduler_flag_to_index(flag);
+    if (idx < 0) return 0U;
+    uint32_t v = g_flag_worst_latency_us[(uint32_t)idx];
+    g_flag_worst_latency_us[(uint32_t)idx] = 0U;
+    return v;
+}
+
+uint32_t Scheduler_PopMissCount(system_flag_t flag)
+{
+    int32_t idx = scheduler_flag_to_index(flag);
+    if (idx < 0) return 0U;
+    uint32_t v = g_flag_miss_count[(uint32_t)idx];
+    g_flag_miss_count[(uint32_t)idx] = 0U;
+    return v;
+}
+
+uint32_t Scheduler_PopErrorCount(system_flag_t flag)
+{
+    int32_t idx = scheduler_flag_to_index(flag);
+    if (idx < 0) return 0U;
+    uint32_t v = g_flag_error_count[(uint32_t)idx];
+    g_flag_error_count[(uint32_t)idx] = 0U;
+    return v;
+}
+
+
 
 static const char *scheduler_flag_name(system_flag_t flag)
 {
@@ -101,17 +160,13 @@ void Scheduler_SetFlagFromISR(system_flag_t flag)
 void Scheduler_ReportTaskDelayAndClear(system_flag_t flag)
 {
     int32_t idx = scheduler_flag_to_index(flag);
-    uint32_t now_cycles;
     uint32_t set_cycles;
-    uint32_t delay_us;
     uint16_t resent_count;
 
     if (idx < 0)
     {
         return;
     }
-
-    now_cycles = DWT->CYCCNT;
 
     __disable_irq();
     set_cycles = g_flag_set_cycle[(uint32_t)idx];
@@ -120,18 +175,45 @@ void Scheduler_ReportTaskDelayAndClear(system_flag_t flag)
     g_flag_resent_count[(uint32_t)idx] = 0U;
     __enable_irq();
 
+    /* compute interval between consecutive set timestamps for this flag */
     if (set_cycles != 0U)
     {
-        delay_us = scheduler_cycles_to_us(now_cycles - set_cycles);
-        if (delay_us > SCHEDULER_MISS_THRESHOLD_US)
+        uint32_t prev = g_flag_prev_set_cycle[(uint32_t)idx];
+        if (prev != 0U)
         {
-            (void)delay_us;
+            uint32_t interval = set_cycles - prev;
+            g_flag_last_interval_cycles[(uint32_t)idx] = interval;
+            if (interval > g_flag_worst_interval_cycles[(uint32_t)idx])
+            {
+                g_flag_worst_interval_cycles[(uint32_t)idx] = interval;
+            }
+        }
+        g_flag_prev_set_cycle[(uint32_t)idx] = set_cycles;
+    }
+
+    /* compute latency: time from when flag was set until now (when cleared) */
+    if (set_cycles != 0U)
+    {
+        uint32_t now_cycles = DWT->CYCCNT;
+        uint32_t latency_cycles = now_cycles - set_cycles;
+        uint32_t latency_us = scheduler_cycles_to_us(latency_cycles);
+        g_flag_last_latency_us[(uint32_t)idx] = latency_us;
+        if (latency_us > g_flag_worst_latency_us[(uint32_t)idx])
+        {
+            g_flag_worst_latency_us[(uint32_t)idx] = latency_us;
+        }
+        /* count miss when latency exceeds threshold (10us) */
+        if (latency_us > 10U)
+        {
+            g_flag_miss_count[(uint32_t)idx]++;
         }
     }
 
+    /* if the flag was set additional times before processing, count errors */
     if (resent_count > 0U)
     {
-        (void)resent_count;
+        /* each extra set is considered an error */
+        g_flag_error_count[(uint32_t)idx] += (uint32_t)resent_count;
     }
 }
 

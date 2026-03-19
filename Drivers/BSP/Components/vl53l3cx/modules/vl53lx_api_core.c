@@ -118,7 +118,6 @@ void HAL_FMPI2C_MemRxCpltCallback(FMPI2C_HandleTypeDef *hfmpi2c)
 	if ((hfmpi2c == &hfmpi2c1) && (vl53lx_hist_dma_active != 0U)) {
 		vl53lx_hist_dma_done = 1U;
 		Scheduler_SetFlagFromISR(FLAG_VL53CX_IRQ);
-		printf("[TOF_DMA] MemRxCplt OK\r\n");
 	}
 }
 

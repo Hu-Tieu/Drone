@@ -69,4 +69,22 @@ void Scheduler_SetFlagFromISR(system_flag_t flag);
 /* Record execution time (in DWT cycles) for a task instance. */
 void Scheduler_RecordTaskExecCycles(system_flag_t flag, uint32_t exec_cycles);
 
+/* Get the most recent inter-set interval (in DWT cycles) for a flag. */
+uint32_t Scheduler_GetLastIntervalCycles(system_flag_t flag);
+
+/* Get the worst inter-set interval (in DWT cycles) observed since last reset. */
+uint32_t Scheduler_GetWorstIntervalCycles(system_flag_t flag);
+
+/* Latency: time from flag set -> when it was cleared (in microseconds).
+ * Returns the most recent latency (no clear).
+ */
+uint32_t Scheduler_GetLastLatencyUs(system_flag_t flag);
+
+/* Pop the worst latency (us) observed since last pop (clears stored worst). */
+uint32_t Scheduler_PopWorstLatencyUs(system_flag_t flag);
+
+/* Pop counters accumulated since last pop: miss count and error count. */
+uint32_t Scheduler_PopMissCount(system_flag_t flag);
+uint32_t Scheduler_PopErrorCount(system_flag_t flag);
+
 #endif

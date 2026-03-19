@@ -119,7 +119,7 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   uint32_t rpm_last_capture = 0;
   IMU_Init();
   PWM_Init();
-  TOF_Init();
+  // TOF_Init();
   Receiver_Init(&receiver, &huart5);
   ADC_Init();
   NRF24_Init();
@@ -135,8 +135,40 @@ while (1)
   static uint32_t pending_flags = 0U;
   static uint32_t main_loop_worst_cycles = 0U;
   static uint32_t main_loop_last_report_ms = 0U;
+  static uint32_t worst_rf24_irq_cycles = 0U;
+  static uint32_t worst_adc_vbat_half_cycles = 0U;
+  static uint32_t worst_adc_vbat_full_cycles = 0U;
+  static uint32_t worst_read_gyro_cycles = 0U;
+  static uint32_t worst_estimator_gyro_cycles = 0U;
+  static uint32_t worst_controller_rate_cycles = 0U;
+  static uint32_t worst_motor_mixer_cycles = 0U;
+  static uint32_t worst_motor_inverse_cycles = 0U;
+  static uint32_t worst_esc_output_cycles = 0U;
+  static uint32_t worst_rf24_send_cycles = 0U;
+  static uint32_t worst_rpm_half_cycles = 0U;
+  static uint32_t worst_rpm_full_cycles = 0U;
+  static uint32_t worst_read_baro_cycles = 0U;
+  static uint32_t worst_read_accel_cycles = 0U;
+  static uint32_t worst_rate_interval_cycles = 0U;
+  static uint32_t worst_angle_interval_cycles = 0U;
+  static uint32_t worst_velocity_interval_cycles = 0U;
+  static uint32_t worst_position_interval_cycles = 0U;
+  static uint32_t last_rate_start_cycles = 0U;
+  static uint32_t last_angle_start_cycles = 0U;
+  static uint32_t last_velocity_start_cycles = 0U;
+  static uint32_t last_position_start_cycles = 0U;
+  static uint32_t last_rate_interval_cycles = 0U;
+  static uint32_t last_angle_interval_cycles = 0U;
+  static uint32_t last_velocity_interval_cycles = 0U;
+  static uint32_t last_position_interval_cycles = 0U;
+  static uint32_t worst_receiver_ibus_cycles = 0U;
+  static uint32_t worst_receiver_mapping_cycles = 0U;
+  static uint32_t worst_read_mag_cycles = 0U;
+  static uint32_t worst_tof_distance_cycles = 0U;
   uint32_t main_loop_start_cycles = DWT->CYCCNT;
-  uint32_t main_loop_exec_cycles;
+  uint8_t loop_had_work = 0U;
+  uint32_t task_start_cycles;
+  uint32_t task_exec_cycles;
     /* ===== Atomic snapshot ===== */
     __disable_irq();
         pending_flags |= g_flag.system;
@@ -147,13 +179,20 @@ while (1)
     {
       goto MAIN_LOOP_TIMING;
     }
+    loop_had_work = 1U;
 
     /* ===================== RF24 IRQ ===================== */
     if ((pending_flags & FLAG_RF24_IRQ) != 0U)
     {
     pending_flags &= ~FLAG_RF24_IRQ;
     Scheduler_ReportTaskDelayAndClear(FLAG_RF24_IRQ);
+        task_start_cycles = DWT->CYCCNT;
         NRF24_IRQHandler();
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_rf24_irq_cycles)
+        {
+          worst_rf24_irq_cycles = task_exec_cycles;
+        }
     }
 
     /* ===================== VBAT UPDATE ===================== */
@@ -161,22 +200,47 @@ while (1)
     {
     pending_flags &= ~FLAG_VBAT_HALF_UPDATE;
     Scheduler_ReportTaskDelayAndClear(FLAG_VBAT_HALF_UPDATE);
+        task_start_cycles = DWT->CYCCNT;
         ADC_GetVbat(&sys.sensor.battery, ADC_CHANNEL_VBAT_HALF);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_adc_vbat_half_cycles)
+        {
+          worst_adc_vbat_half_cycles = task_exec_cycles;
+        }
     }
 
     if ((pending_flags & FLAG_VBAT_FULL_UPDATE) != 0U)
     {
     pending_flags &= ~FLAG_VBAT_FULL_UPDATE;
     Scheduler_ReportTaskDelayAndClear(FLAG_VBAT_FULL_UPDATE);
+        task_start_cycles = DWT->CYCCNT;
         ADC_GetVbat(&sys.sensor.battery, ADC_CHANNEL_VBAT_FULL);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_adc_vbat_full_cycles)
+        {
+          worst_adc_vbat_full_cycles = task_exec_cycles;
+        }
     }
 
     if ((pending_flags & FLAG_GYRO_UPDATE) != 0U)
     {
     pending_flags &= ~FLAG_GYRO_UPDATE;
     Scheduler_ReportTaskDelayAndClear(FLAG_GYRO_UPDATE);
+        task_start_cycles = DWT->CYCCNT;
         Read_Gyro(&sys.sensor.imu);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_read_gyro_cycles)
+        {
+          worst_read_gyro_cycles = task_exec_cycles;
+        }
+
+        task_start_cycles = DWT->CYCCNT;
         Estimator_GyroUpdate(&sys.sensor, &sys.state, &sys.estimator, &sys.gyro_lpf);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_estimator_gyro_cycles)
+        {
+          worst_estimator_gyro_cycles = task_exec_cycles;
+        }
     }
     
     /* ============================================================
@@ -186,13 +250,47 @@ while (1)
     {
         pending_flags &= ~FLAG_RATE_LOOP;
         Scheduler_ReportTaskDelayAndClear(FLAG_RATE_LOOP);
+            /* rate loop inter-start interval: compute and report per-occurrence */
+            {
+              uint32_t now_cycles = DWT->CYCCNT;
+              if (last_rate_start_cycles != 0U)
+              {
+                uint32_t interval = now_cycles - last_rate_start_cycles;
+                last_rate_interval_cycles = interval; /* store latest interval (cycles) */
+                if (interval > worst_rate_interval_cycles)
+                {
+                  worst_rate_interval_cycles = interval; /* keep worst for reference */
+                }
+              }
+              last_rate_start_cycles = now_cycles;
+            }
+        task_start_cycles = DWT->CYCCNT;
         Controller_Rate_Loop(&sys.rate_ctrl, &sys.state, &sys.signals.torque_pid, &sys.signals.rate_sp);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_controller_rate_cycles)
+        {
+          worst_controller_rate_cycles = task_exec_cycles;
+        }
+
+        task_start_cycles = DWT->CYCCNT;
         Motor_Mixer(&sys.signals.torque_pid,
                     sys.signals.thrust_sp,
                     &sys.signals.motor_desired);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_motor_mixer_cycles)
+        {
+          worst_motor_mixer_cycles = task_exec_cycles;
+        }
+
+        task_start_cycles = DWT->CYCCNT;
         Motor_Inverse_Model(&sys.signals.motor_desired,
                             &sys.signals.u_esc,
                             sys.sensor.battery);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_motor_inverse_cycles)
+        {
+          worst_motor_inverse_cycles = task_exec_cycles;
+        }
         if (sys.sensor.ibus.channel[4] == 0.0f)
         {
             // safety mode
@@ -201,16 +299,34 @@ while (1)
             sys.signals.u_esc.w_bl = sys.sensor.ibus.channel[2];
             sys.signals.u_esc.w_br = sys.sensor.ibus.channel[2];
 
+            task_start_cycles = DWT->CYCCNT;
             ESC_Output(&sys.signals.u_esc);
+            task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+            if (task_exec_cycles > worst_esc_output_cycles)
+            {
+              worst_esc_output_cycles = task_exec_cycles;
+            }
         
         }
         else if (sys.sensor.ibus.channel[5] == 1.0f)
         {
             // normal output
+            task_start_cycles = DWT->CYCCNT;
             ESC_Output(&sys.signals.u_esc);
+            task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+            if (task_exec_cycles > worst_esc_output_cycles)
+            {
+              worst_esc_output_cycles = task_exec_cycles;
+            }
         }
  
+        task_start_cycles = DWT->CYCCNT;
         NRF24_Send();
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_rf24_send_cycles)
+        {
+          worst_rf24_send_cycles = task_exec_cycles;
+        }
     }
 
     /* ============================================================
@@ -220,7 +336,13 @@ while (1)
         {
         pending_flags &= ~FLAG_RPM_HALF;
         Scheduler_ReportTaskDelayAndClear(FLAG_RPM_HALF);
+        task_start_cycles = DWT->CYCCNT;
         Motor_RPM_Update_Half(&sys.sensor.motor_rpm);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_rpm_half_cycles)
+        {
+          worst_rpm_half_cycles = task_exec_cycles;
+        }
         rpm_last_capture = HAL_GetTick();
         }
 
@@ -228,7 +350,13 @@ while (1)
         {
         pending_flags &= ~FLAG_RPM_FULL;
         Scheduler_ReportTaskDelayAndClear(FLAG_RPM_FULL);
+        task_start_cycles = DWT->CYCCNT;
         Motor_RPM_Update_Full(&sys.sensor.motor_rpm);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_rpm_full_cycles)
+        {
+          worst_rpm_full_cycles = task_exec_cycles;
+        }
         rpm_last_capture = HAL_GetTick();
         }
     /* ============================================================
@@ -238,7 +366,21 @@ while (1)
     {
         pending_flags &= ~FLAG_ANGLE_LOOP;
         Scheduler_ReportTaskDelayAndClear(FLAG_ANGLE_LOOP);
-        /* TODO: angle loop */
+            /* angle loop inter-start interval: compute and report per-occurrence */
+            {
+              uint32_t now_cycles = DWT->CYCCNT;
+              if (last_angle_start_cycles != 0U)
+              {
+                uint32_t interval = now_cycles - last_angle_start_cycles;
+                last_angle_interval_cycles = interval;
+                if (interval > worst_angle_interval_cycles)
+                {
+                  worst_angle_interval_cycles = interval;
+                }
+              }
+              last_angle_start_cycles = now_cycles;
+            }
+            /* TODO: angle loop */
     }
     /* ============================================================
      *                      VELOCITY LOOP 100Hz
@@ -247,9 +389,51 @@ while (1)
     {
         pending_flags &= ~FLAG_VELOCITY_LOOP;
         Scheduler_ReportTaskDelayAndClear(FLAG_VELOCITY_LOOP);
+            /* velocity loop inter-start interval: compute and report per-occurrence */
+            {
+              uint32_t now_cycles = DWT->CYCCNT;
+              if (last_velocity_start_cycles != 0U)
+              {
+                uint32_t interval = now_cycles - last_velocity_start_cycles;
+                last_velocity_interval_cycles = interval;
+                if (interval > worst_velocity_interval_cycles)
+                {
+                  worst_velocity_interval_cycles = interval;
+                }
+              }
+              last_velocity_start_cycles = now_cycles;
+            }
+        task_start_cycles = DWT->CYCCNT;
         Read_Barometer(&sys.sensor.baro);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_read_baro_cycles)
+        {
+          worst_read_baro_cycles = task_exec_cycles;
+        }
+
+        task_start_cycles = DWT->CYCCNT;
+        Read_Accel(&sys.sensor.imu);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_read_accel_cycles)
+        {
+          worst_read_accel_cycles = task_exec_cycles;
+        }
+
+        task_start_cycles = DWT->CYCCNT;
         Receiver_ProcessIBUS(&receiver, &sys.sensor.ibus);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_receiver_ibus_cycles)
+        {
+          worst_receiver_ibus_cycles = task_exec_cycles;
+        }
+
+        task_start_cycles = DWT->CYCCNT;
         Receiver_Mapping(&sys.sensor, &sys.signals);
+        task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+        if (task_exec_cycles > worst_receiver_mapping_cycles)
+        {
+          worst_receiver_mapping_cycles = task_exec_cycles;
+        }
     }
 
     /* ============================================================
@@ -259,28 +443,45 @@ while (1)
     {
         pending_flags &= ~FLAG_POSITION_LOOP;
         Scheduler_ReportTaskDelayAndClear(FLAG_POSITION_LOOP);
+            /* position loop inter-start interval: compute and report per-occurrence */
+            {
+              uint32_t now_cycles = DWT->CYCCNT;
+              if (last_position_start_cycles != 0U)
+              {
+                uint32_t interval = now_cycles - last_position_start_cycles;
+                last_position_interval_cycles = interval;
+                if (interval > worst_position_interval_cycles)
+                {
+                  worst_position_interval_cycles = interval;
+                }
+              }
+              last_position_start_cycles = now_cycles;
+            }
         if (HAL_GetTick() - rpm_last_capture > 400)
         {
             sys.sensor.motor_rpm = 0.0f;
             rpm_last_capture = HAL_GetTick();
         }
+      task_start_cycles = DWT->CYCCNT;
         Read_Magnetic(&sys.sensor.imu);
+      task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+      if (task_exec_cycles > worst_read_mag_cycles)
+      {
+        worst_read_mag_cycles = task_exec_cycles;
+      }
     }
 
         if ((pending_flags & FLAG_VL53CX_IRQ) != 0U)
         {
-          uint32_t tof_start_cycles;
-          uint32_t tof_exec_us = 0U;
-          uint32_t cycles_per_us = (SystemCoreClock / 1000000U);
             pending_flags &= ~FLAG_VL53CX_IRQ;
             Scheduler_ReportTaskDelayAndClear(FLAG_VL53CX_IRQ);
-          tof_start_cycles = DWT->CYCCNT;
+            task_start_cycles = DWT->CYCCNT;
             TOF_distance(&tof_last_distance_mm);
-          if (cycles_per_us != 0U)
-          {
-            tof_exec_us = (DWT->CYCCNT - tof_start_cycles) / cycles_per_us;
-          }
-          printf("[TOF_PROC] %lu us, d=%ld mm\r\n", (unsigned long)tof_exec_us, tof_last_distance_mm);
+            task_exec_cycles = DWT->CYCCNT - task_start_cycles;
+            if (task_exec_cycles > worst_tof_distance_cycles)
+            {
+              worst_tof_distance_cycles = task_exec_cycles;
+            }
             sys.sensor.distance = tof_last_distance_mm;
         }
 
@@ -291,22 +492,156 @@ while (1)
         }
 
     MAIN_LOOP_TIMING:
-        main_loop_exec_cycles = DWT->CYCCNT - main_loop_start_cycles;
-        if (main_loop_exec_cycles > main_loop_worst_cycles)
+        if (loop_had_work != 0U)
         {
-          main_loop_worst_cycles = main_loop_exec_cycles;
+          uint32_t main_loop_exec_cycles = DWT->CYCCNT - main_loop_start_cycles;
+          if (main_loop_exec_cycles > main_loop_worst_cycles)
+          {
+            main_loop_worst_cycles = main_loop_exec_cycles;
+          }
         }
 
         if ((HAL_GetTick() - main_loop_last_report_ms) >= 1000U)
         {
           uint32_t cycles_per_us = (SystemCoreClock / 1000000U);
           uint32_t worst_us = 0U;
+          /* some previous interval/next-delay vars removed — using scheduler latency/miss/error instead */
+          uint32_t rate_latency_us = 0U;
+          uint32_t angle_latency_us = 0U;
+          uint32_t velocity_latency_us = 0U;
+          uint32_t position_latency_us = 0U;
+          uint32_t worst_rate_latency_us = 0U;
+          uint32_t worst_angle_latency_us = 0U;
+          uint32_t worst_velocity_latency_us = 0U;
+          uint32_t worst_position_latency_us = 0U;
+          uint32_t rate_miss = 0U;
+          uint32_t angle_miss = 0U;
+          uint32_t velocity_miss = 0U;
+          uint32_t position_miss = 0U;
+          uint32_t rate_err = 0U;
+          uint32_t angle_err = 0U;
+          uint32_t velocity_err = 0U;
+          uint32_t position_err = 0U;
+          uint32_t rf24_irq_us = 0U;
+          uint32_t adc_vbat_half_us = 0U;
+          uint32_t adc_vbat_full_us = 0U;
+          uint32_t read_gyro_us = 0U;
+          uint32_t estimator_gyro_us = 0U;
+          uint32_t controller_rate_us = 0U;
+          uint32_t motor_mixer_us = 0U;
+          uint32_t motor_inverse_us = 0U;
+          uint32_t esc_output_us = 0U;
+          uint32_t rf24_send_us = 0U;
+          uint32_t rpm_half_us = 0U;
+          uint32_t rpm_full_us = 0U;
+          uint32_t read_baro_us = 0U;
+          uint32_t read_accel_us = 0U;
+          uint32_t receiver_ibus_us = 0U;
+          uint32_t receiver_mapping_us = 0U;
+          uint32_t read_mag_us = 0U;
+          uint32_t tof_distance_us = 0U;
           if (cycles_per_us != 0U)
           {
             worst_us = main_loop_worst_cycles / cycles_per_us;
+
+            /* query per-flag latency (set->processed), worst latency, and counts */
+            rate_latency_us = Scheduler_GetLastLatencyUs(FLAG_RATE_LOOP);
+            angle_latency_us = Scheduler_GetLastLatencyUs(FLAG_ANGLE_LOOP);
+            velocity_latency_us = Scheduler_GetLastLatencyUs(FLAG_VELOCITY_LOOP);
+            position_latency_us = Scheduler_GetLastLatencyUs(FLAG_POSITION_LOOP);
+
+            worst_rate_latency_us = Scheduler_PopWorstLatencyUs(FLAG_RATE_LOOP);
+            worst_angle_latency_us = Scheduler_PopWorstLatencyUs(FLAG_ANGLE_LOOP);
+            worst_velocity_latency_us = Scheduler_PopWorstLatencyUs(FLAG_VELOCITY_LOOP);
+            worst_position_latency_us = Scheduler_PopWorstLatencyUs(FLAG_POSITION_LOOP);
+
+            rate_miss = Scheduler_PopMissCount(FLAG_RATE_LOOP);
+            angle_miss = Scheduler_PopMissCount(FLAG_ANGLE_LOOP);
+            velocity_miss = Scheduler_PopMissCount(FLAG_VELOCITY_LOOP);
+            position_miss = Scheduler_PopMissCount(FLAG_POSITION_LOOP);
+
+            rate_err = Scheduler_PopErrorCount(FLAG_RATE_LOOP);
+            angle_err = Scheduler_PopErrorCount(FLAG_ANGLE_LOOP);
+            velocity_err = Scheduler_PopErrorCount(FLAG_VELOCITY_LOOP);
+            position_err = Scheduler_PopErrorCount(FLAG_POSITION_LOOP);
+
+            rf24_irq_us = worst_rf24_irq_cycles / cycles_per_us;
+            adc_vbat_half_us = worst_adc_vbat_half_cycles / cycles_per_us;
+            adc_vbat_full_us = worst_adc_vbat_full_cycles / cycles_per_us;
+            read_gyro_us = worst_read_gyro_cycles / cycles_per_us;
+            estimator_gyro_us = worst_estimator_gyro_cycles / cycles_per_us;
+            controller_rate_us = worst_controller_rate_cycles / cycles_per_us;
+            motor_mixer_us = worst_motor_mixer_cycles / cycles_per_us;
+            motor_inverse_us = worst_motor_inverse_cycles / cycles_per_us;
+            esc_output_us = worst_esc_output_cycles / cycles_per_us;
+            rf24_send_us = worst_rf24_send_cycles / cycles_per_us;
+            rpm_half_us = worst_rpm_half_cycles / cycles_per_us;
+            rpm_full_us = worst_rpm_full_cycles / cycles_per_us;
+            read_baro_us = worst_read_baro_cycles / cycles_per_us;
+            read_accel_us = worst_read_accel_cycles / cycles_per_us;
+            receiver_ibus_us = worst_receiver_ibus_cycles / cycles_per_us;
+            receiver_mapping_us = worst_receiver_mapping_cycles / cycles_per_us;
+            read_mag_us = worst_read_mag_cycles / cycles_per_us;
+            tof_distance_us = worst_tof_distance_cycles / cycles_per_us;
           }
-          printf("[MAIN_LOOP_WORST_1S] %lu us\r\n", (unsigned long)worst_us);
+          printf("================== MAIN LOOP START ==================\r\n");
+               printf("[PERF_1S][LOOP] worst=%luus\r\n", (unsigned long)worst_us);
+               /* print per-loop latency (time set->processed), miss (>10us), and errors (re-sets while pending) */
+               printf("[PERF_1S][LOOP] RATE latency=%luus miss=%lu err=%lu\r\n",
+                 (unsigned long)rate_latency_us, (unsigned long)rate_miss, (unsigned long)rate_err);
+               printf("[PERF_1S][LOOP] ANGLE latency=%luus miss=%lu err=%lu\r\n",
+                 (unsigned long)angle_latency_us, (unsigned long)angle_miss, (unsigned long)angle_err);
+               printf("[PERF_1S][LOOP] VEL latency=%luus miss=%lu err=%lu\r\n",
+                 (unsigned long)velocity_latency_us, (unsigned long)velocity_miss, (unsigned long)velocity_err);
+               printf("[PERF_1S][LOOP] POS latency=%luus miss=%lu err=%lu\r\n",
+                 (unsigned long)position_latency_us, (unsigned long)position_miss, (unsigned long)position_err);
+               printf("[PERF_1S][LOOP] worst_RATE_latency=%luus worst_ANGLE_latency=%luus worst_VEL_latency=%luus worst_POS_latency=%luus\r\n",
+                 (unsigned long)worst_rate_latency_us, (unsigned long)worst_angle_latency_us,
+                 (unsigned long)worst_velocity_latency_us, (unsigned long)worst_position_latency_us);
+
+               printf("[PERF_1S][FUNC][IMU] read_gyro=%luus\r\n", (unsigned long)read_gyro_us);
+               printf("[PERF_1S][FUNC][IMU] read_accel=%luus\r\n", (unsigned long)read_accel_us);
+               printf("[PERF_1S][FUNC][IMU] read_mag=%luus\r\n", (unsigned long)read_mag_us);
+               printf("[PERF_1S][FUNC][IMU] est_gyro=%luus\r\n", (unsigned long)estimator_gyro_us);
+               printf("[PERF_1S][FUNC][IMU] read_baro=%luus\r\n", (unsigned long)read_baro_us);
+               printf("[PERF_1S][FUNC][IMU] tof=%luus\r\n", (unsigned long)tof_distance_us);
+
+               printf("[PERF_1S][FUNC][CTRL] rate=%luus\r\n", (unsigned long)controller_rate_us);
+               printf("[PERF_1S][FUNC][CTRL] mixer=%luus\r\n", (unsigned long)motor_mixer_us);
+               printf("[PERF_1S][FUNC][CTRL] inverse=%luus\r\n", (unsigned long)motor_inverse_us);
+               printf("[PERF_1S][FUNC][CTRL] esc=%luus\r\n", (unsigned long)esc_output_us);
+               printf("[PERF_1S][FUNC][CTRL] mapping=%luus\r\n", (unsigned long)receiver_mapping_us);
+
+               printf("[PERF_1S][FUNC][IO] rf24_irq=%luus\r\n", (unsigned long)rf24_irq_us);
+               printf("[PERF_1S][FUNC][IO] rf24_tx=%luus\r\n", (unsigned long)rf24_send_us);
+               printf("[PERF_1S][FUNC][IO] vbat_half=%luus\r\n", (unsigned long)adc_vbat_half_us);
+               printf("[PERF_1S][FUNC][IO] vbat_full=%luus\r\n", (unsigned long)adc_vbat_full_us);
+               printf("[PERF_1S][FUNC][IO] ibus=%luus\r\n", (unsigned long)receiver_ibus_us);
+               printf("[PERF_1S][FUNC][IO] rpm_half=%luus\r\n", (unsigned long)rpm_half_us);
+               printf("[PERF_1S][FUNC][IO] rpm_full=%luus\r\n", (unsigned long)rpm_full_us);
           main_loop_worst_cycles = 0U;
+          worst_rf24_irq_cycles = 0U;
+          worst_adc_vbat_half_cycles = 0U;
+          worst_adc_vbat_full_cycles = 0U;
+          worst_read_gyro_cycles = 0U;
+          worst_estimator_gyro_cycles = 0U;
+          worst_controller_rate_cycles = 0U;
+          worst_motor_mixer_cycles = 0U;
+          worst_motor_inverse_cycles = 0U;
+          worst_esc_output_cycles = 0U;
+          worst_rf24_send_cycles = 0U;
+          worst_rpm_half_cycles = 0U;
+          worst_rpm_full_cycles = 0U;
+          worst_read_baro_cycles = 0U;
+          worst_read_accel_cycles = 0U;
+          worst_receiver_ibus_cycles = 0U;
+          worst_receiver_mapping_cycles = 0U;
+          worst_read_mag_cycles = 0U;
+          worst_tof_distance_cycles = 0U;
+          worst_rate_interval_cycles = 0U;
+          worst_angle_interval_cycles = 0U;
+          worst_velocity_interval_cycles = 0U;
+          worst_position_interval_cycles = 0U;
           main_loop_last_report_ms = HAL_GetTick();
         }
 }

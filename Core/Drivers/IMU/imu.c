@@ -8,6 +8,90 @@ I2C_HandleTypeDef *hi2c3_IMU      = &hi2c3;
 static BMX160_t g_bmx160;
 static BMP388_t g_bmp388;
 
+typedef enum {
+    IMU_DMA_REQ_NONE = 0,
+    IMU_DMA_REQ_GYRO,
+    IMU_DMA_REQ_ACCEL,
+    IMU_DMA_REQ_MAG,
+    IMU_DMA_REQ_BARO
+} IMU_DMA_Request_t;
+
+static volatile IMU_DMA_Request_t g_imu_dma_req = IMU_DMA_REQ_NONE;
+static IMU_Data_t *g_imu_dma_target = NULL;
+static Baro_Data_t *g_baro_dma_target = NULL;
+static uint8_t g_imu_dma_gyro_buf[BMX160_GYRO_LEN];
+static uint8_t g_imu_dma_accel_buf[BMX160_ACCEL_LEN];
+static uint8_t g_imu_dma_mag_buf[BMX160_MAG_LEN];
+static uint8_t g_baro_dma_buf[BMP388_LEN];
+
+static HAL_StatusTypeDef imu_start_read_dma(IMU_DMA_Request_t req,
+                                            uint8_t reg,
+                                            uint8_t *buf,
+                                            uint16_t len,
+                                            IMU_Data_t *target)
+{
+    HAL_StatusTypeDef st;
+
+    if ((target == NULL) || (g_imu_dma_req != IMU_DMA_REQ_NONE))
+    {
+        return HAL_BUSY;
+    }
+
+    if (HAL_I2C_GetState(hi2c3_IMU) != HAL_I2C_STATE_READY)
+    {
+        return HAL_BUSY;
+    }
+
+    g_imu_dma_req = req;
+    g_imu_dma_target = target;
+
+    st = HAL_I2C_Mem_Read_DMA(hi2c3_IMU,
+                              BMX160_ADDRESS,
+                              reg,
+                              I2C_MEMADD_SIZE_8BIT,
+                              buf,
+                              len);
+    if (st != HAL_OK)
+    {
+        g_imu_dma_req = IMU_DMA_REQ_NONE;
+        g_imu_dma_target = NULL;
+    }
+
+    return st;
+}
+
+static HAL_StatusTypeDef baro_start_read_dma(Baro_Data_t *target)
+{
+    HAL_StatusTypeDef st;
+
+    if ((target == NULL) || (g_imu_dma_req != IMU_DMA_REQ_NONE))
+    {
+        return HAL_BUSY;
+    }
+
+    if (HAL_I2C_GetState(hi2c3_IMU) != HAL_I2C_STATE_READY)
+    {
+        return HAL_BUSY;
+    }
+
+    g_imu_dma_req = IMU_DMA_REQ_BARO;
+    g_baro_dma_target = target;
+
+    st = HAL_I2C_Mem_Read_DMA(hi2c3_IMU,
+                              BMP388_ADDRESS,
+                              BMP388_REG_DATA,
+                              I2C_MEMADD_SIZE_8BIT,
+                              g_baro_dma_buf,
+                              BMP388_LEN);
+    if (st != HAL_OK)
+    {
+        g_imu_dma_req = IMU_DMA_REQ_NONE;
+        g_baro_dma_target = NULL;
+    }
+
+    return st;
+}
+
 static void I2C_BusRecovery(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -249,49 +333,57 @@ void bmp388_init(void) {
     g_bmp388.calib.par_p11 = NVM_PAR_P11 / 36893488147419103232.0f; // 2^65
 }
 
-void Read_Barometer(Baro_Data_t *baro) {
-    uint8_t data[BMP388_LEN];
-    HAL_I2C_Mem_Read(hi2c3_IMU, BMP388_ADDRESS, BMP388_REG_DATA,
-            I2C_MEMADD_SIZE_8BIT, data, BMP388_LEN,
-            HAL_MAX_DELAY);
+static void imu_apply_baro(Baro_Data_t *baro, const uint8_t *data)
+{
     uint32_t p_raw = (data[0]) | (data[1] << 8) | (data[2] << 16);
-    int32_t t_raw = (int32_t)(((uint32_t)data[3]) | ((uint32_t)data[4] << 8) | ((uint32_t)data[5] << 16));
+    int32_t t_raw = (int32_t)((data[3]) | (data[4] << 8) | (data[5] << 16));
 
-    // 2. Chuyển sang float
-    float t_adc = (float) t_raw;
-    float p_adc = (float) p_raw;
+    float t_adc = (float)t_raw;
+    float p_adc = (float)p_raw;
 
-    // 3. Bù trừ nhiệt độ theo datasheet
-    float partial_data1 = (t_adc - (float) g_bmp388.calib.par_t1);
-    float partial_data2 = partial_data1 * g_bmp388.calib.par_t2;
-    float temperature = partial_data2
-            + (partial_data1 * partial_data1) * g_bmp388.calib.par_t3;
+    const BMP388_Calib *c = &g_bmp388.calib;
 
-    // 4. Bù trừ áp suất theo datasheet
-    float partial_data3 = g_bmp388.calib.par_p6 * temperature;
-    float partial_data4 = g_bmp388.calib.par_p7 * temperature * temperature;
-    float partial_data5 = g_bmp388.calib.par_p8 * temperature * temperature
-            * temperature;
-    float partial_out1 = g_bmp388.calib.par_p5 + partial_data3 + partial_data4
-            + partial_data5;
+    // ===== TEMPERATURE =====
+    float dt = t_adc - c->par_t1;
+    float dt2 = dt * dt;
 
-    float partial_data6 = g_bmp388.calib.par_p2 * temperature;
-    float partial_data7 = g_bmp388.calib.par_p3 * temperature * temperature;
-    float partial_data8 = g_bmp388.calib.par_p4 * temperature * temperature
-            * temperature;
-    float partial_out2 =
-            p_adc
-                    * (g_bmp388.calib.par_p1 + partial_data6 + partial_data7
-                            + partial_data8);
+    float temperature = dt * c->par_t2 + dt2 * c->par_t3;
 
-    float partial_out3 = p_adc * p_adc
-            * (g_bmp388.calib.par_p9 + g_bmp388.calib.par_p10 * temperature);
-    float pressure = partial_out1 + partial_out2 + partial_out3
-            + g_bmp388.calib.par_p11 * p_adc * p_adc * p_adc;
+    // ===== PRECOMPUTE =====
+    float t  = temperature;
+    float t2 = t * t;
+    float t3 = t2 * t;
 
-    // 5. Lưu kết quả
-    baro->temperature = temperature;  // °C
-    baro->pressure= pressure;     // Pa
+    float p  = p_adc;
+    float p2 = p * p;
+    float p3 = p2 * p;
+
+    // ===== PRESSURE =====
+    float out1 =
+        c->par_p5 +
+        c->par_p6 * t +
+        c->par_p7 * t2 +
+        c->par_p8 * t3;
+
+    float out2 =
+        p * (c->par_p1 +
+             c->par_p2 * t +
+             c->par_p3 * t2 +
+             c->par_p4 * t3);
+
+    float out3 =
+        p2 * (c->par_p9 + c->par_p10 * t);
+
+    float pressure =
+        out1 + out2 + out3 + c->par_p11 * p3;
+
+    baro->temperature = temperature;
+    baro->pressure = pressure;
+}
+
+void Read_Barometer(Baro_Data_t *baro)
+{
+    (void)baro_start_read_dma(baro);
 }
 
 void bmx160_init(void) {
@@ -352,57 +444,30 @@ void bmx160_init(void) {
 
 }
 
-void Read_Gyro(IMU_Data_t *imu)
+static void imu_apply_gyro(IMU_Data_t *imu, const uint8_t *data)
 {
-    uint8_t data[BMX160_ACCEL_LEN + BMX160_GYRO_LEN];
-
-    HAL_I2C_Mem_Read(hi2c3_IMU,
-                     BMX160_ADDRESS,
-                     BMX160_REG_GYRO_DATA_0,
-                     I2C_MEMADD_SIZE_8BIT,
-                     data,
-                     BMX160_ACCEL_LEN + BMX160_GYRO_LEN,
-                     HAL_MAX_DELAY);
-
-    /* ===== Gyro ===== */
     int16_t gx = (int16_t)(data[0] | (data[1] << 8));
     int16_t gy = (int16_t)(data[2] | (data[3] << 8));
     int16_t gz = (int16_t)(data[4] | (data[5] << 8));
 
-    imu->gy =  gx * 3.8e-3f * M_PI / 180.0f; // dps → rad/s
-    imu->gx =  gy * 3.8e-3f * M_PI / 180.0f;
+    imu->gy = gx * 3.8e-3f * M_PI / 180.0f;
+    imu->gx = gy * 3.8e-3f * M_PI / 180.0f;
     imu->gz = -gz * 3.8e-3f * M_PI / 180.0f;
-
-    
 }
 
-void Read_Accel(IMU_Data_t *imu_data)
+static void imu_apply_accel(IMU_Data_t *imu_data, const uint8_t *data)
 {
-    uint8_t data[BMX160_ACCEL_LEN];
-
-    HAL_I2C_Mem_Read(hi2c3_IMU,
-                     BMX160_ADDRESS,
-                     BMX160_REG_ACCEL_DATA_0,
-                     I2C_MEMADD_SIZE_8BIT,
-                     data,
-                     BMX160_ACCEL_LEN,
-                     HAL_MAX_DELAY);
-
     int16_t ax = (int16_t)(data[0] | (data[1] << 8));
     int16_t ay = (int16_t)(data[2] | (data[3] << 8));
     int16_t az = (int16_t)(data[4] | (data[5] << 8));
 
-    imu_data->ay = -ax * 6.1e-5f * 9.807f; // LSB → m/s²
+    imu_data->ay = -ax * 6.1e-5f * 9.807f;
     imu_data->ax = -ay * 6.1e-5f * 9.807f;
-    imu_data->az =  az * 6.1e-5f * 9.807f;
+    imu_data->az = az * 6.1e-5f * 9.807f;
 }
-void Read_Magnetic(IMU_Data_t *imu_data)
-{
-    uint8_t data[BMX160_MAG_LEN];
 
-    HAL_I2C_Mem_Read(hi2c3_IMU,BMX160_ADDRESS,BMX160_REG_MAG_DATA_0,
-                     I2C_MEMADD_SIZE_8BIT,data,BMX160_MAG_LEN,HAL_MAX_DELAY);
-    
+static void imu_apply_magnetic(IMU_Data_t *imu_data, const uint8_t *data)
+{
     int16_t raw_x, raw_y, raw_z;
     uint16_t raw_rhall;
 
@@ -524,4 +589,95 @@ void Read_Magnetic(IMU_Data_t *imu_data)
 void IMU_Init(void) {
     bmx160_init();
     bmp388_init();
+}
+
+void Read_Gyro(IMU_Data_t *imu)
+{
+    (void)imu_start_read_dma(IMU_DMA_REQ_GYRO,
+                             BMX160_REG_GYRO_DATA_0,
+                             g_imu_dma_gyro_buf,
+                             BMX160_GYRO_LEN,
+                             imu);
+}
+
+void Read_Accel(IMU_Data_t *imu_data)
+{
+    (void)imu_start_read_dma(IMU_DMA_REQ_ACCEL,
+                             BMX160_REG_ACCEL_DATA_0,
+                             g_imu_dma_accel_buf,
+                             BMX160_ACCEL_LEN,
+                             imu_data);
+}
+
+void Read_Magnetic(IMU_Data_t *imu_data)
+{
+    (void)imu_start_read_dma(IMU_DMA_REQ_MAG,
+                             BMX160_REG_MAG_DATA_0,
+                             g_imu_dma_mag_buf,
+                             BMX160_MAG_LEN,
+                             imu_data);
+}
+
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    IMU_Data_t *imu_target;
+    Baro_Data_t *baro_target;
+    IMU_DMA_Request_t req;
+
+    if (hi2c != hi2c3_IMU)
+    {
+        return;
+    }
+
+    imu_target = g_imu_dma_target;
+    baro_target = g_baro_dma_target;
+    req = g_imu_dma_req;
+
+    g_imu_dma_req = IMU_DMA_REQ_NONE;
+    g_imu_dma_target = NULL;
+    g_baro_dma_target = NULL;
+
+    if ((imu_target == NULL) && (baro_target == NULL))
+    {
+        return;
+    }
+
+    if (req == IMU_DMA_REQ_GYRO)
+    {
+        if (imu_target != NULL)
+        {
+            imu_apply_gyro(imu_target, g_imu_dma_gyro_buf);
+        }
+    }
+    else if (req == IMU_DMA_REQ_ACCEL)
+    {
+        if (imu_target != NULL)
+        {
+            imu_apply_accel(imu_target, g_imu_dma_accel_buf);
+        }
+    }
+    else if (req == IMU_DMA_REQ_MAG)
+    {
+        if (imu_target != NULL)
+        {
+            imu_apply_magnetic(imu_target, g_imu_dma_mag_buf);
+        }
+    }
+    else if (req == IMU_DMA_REQ_BARO)
+    {
+        if (baro_target != NULL)
+        {
+            imu_apply_baro(baro_target, g_baro_dma_buf);
+        }
+    }
+}
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c == hi2c3_IMU)
+    {
+        g_imu_dma_req = IMU_DMA_REQ_NONE;
+        g_imu_dma_target = NULL;
+        g_baro_dma_target = NULL;
+    }
 }
