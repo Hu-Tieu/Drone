@@ -119,7 +119,7 @@ void MX_TIM5_Init(void)
   sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
   sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-  sConfigIC.ICFilter = 0;
+  sConfigIC.ICFilter = 2;
   if (HAL_TIM_IC_ConfigChannel(&htim5, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
@@ -253,7 +253,7 @@ void HAL_TIM_IC_MspInit(TIM_HandleTypeDef* tim_icHandle)
     hdma_tim5_ch2.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
     hdma_tim5_ch2.Init.MemDataAlignment = DMA_MDATAALIGN_WORD;
     hdma_tim5_ch2.Init.Mode = DMA_CIRCULAR;
-    hdma_tim5_ch2.Init.Priority = DMA_PRIORITY_LOW;
+    hdma_tim5_ch2.Init.Priority = DMA_PRIORITY_VERY_HIGH; // prioritize RPM capture DMA
     hdma_tim5_ch2.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
     if (HAL_DMA_Init(&hdma_tim5_ch2) != HAL_OK)
     {

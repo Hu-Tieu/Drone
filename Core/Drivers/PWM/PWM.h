@@ -6,7 +6,7 @@
 #define RPM_BUFFER_SIZE     16U          // có thể chỉnh sau này
 #define RPM_TIMEOUT_MS      300U
 #define PULSES_PER_REV      3.0f
-#define TIM_PSC             79.0f
+#define TIM_PSC             89.0f
 
 #define TIM2_CLOCK 90000000
 

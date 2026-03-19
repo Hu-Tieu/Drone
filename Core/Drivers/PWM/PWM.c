@@ -14,7 +14,7 @@
 #include "PWM.h"
 #include "tim.h"
 static Motor_System_t motor;
-static uint32_t rpm_buffer[RPM_BUFFER_SIZE];
+static volatile uint32_t rpm_buffer[RPM_BUFFER_SIZE];
 
 /* ================= HELPER FUNCTIONS ================= */
 

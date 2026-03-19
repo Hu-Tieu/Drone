@@ -267,7 +267,7 @@ while (1)
     {
         pending_flags &= ~FLAG_POSITION_LOOP;
         Scheduler_ReportTaskDelayAndClear(FLAG_POSITION_LOOP);
-        if (HAL_GetTick() - rpm_last_capture > 400)
+        if (HAL_GetTick() - rpm_last_capture > 500)
         {
             sys.sensor.motor_rpm = 0.0f;
             rpm_last_capture = HAL_GetTick();
