@@ -1,4 +1,9 @@
 #include "receiver.h"
+#include "controller_scheduler.h"
+#include "usart.h"
+
+/* Global receiver instance used by scheduler/tasks. */
+Receiver_HandleTypeDef g_receiver;
 
 /* ================= INIT ================= */
 
@@ -104,4 +109,51 @@ bool Receiver_ProcessIBUS(Receiver_HandleTypeDef *hrx,
     }
 
     return true;
+}
+
+SystemMode_t Receiver_Decode_CH45(const IBUS_ChannelData *ch)
+{
+    if (ch == NULL)
+        return SYSTEM_MODE_SAFETY;
+
+    float c4 = ch->channel[4];
+    float c5 = ch->channel[5];
+
+    /* classify c4: low(0) or high(1) */
+    int c4_i = (c4 > 0.5f) ? 1 : 0;
+
+    /* classify c5: 0.0 -> 0, 0.5 -> 1, 1.0 -> 2 (use thresholds) */
+    int c5_i;
+    if (c5 < 0.25f)
+        c5_i = 0;
+    else if (c5 < 0.75f)
+        c5_i = 1;
+    else
+        c5_i = 2;
+
+    /* combine: state = c4_i * 3 + c5_i -> 0..5, map directly to SystemMode_t */
+    int state = c4_i * 3 + c5_i;
+    if (state < 0 || state > 5)
+        return SYSTEM_MODE_SAFETY;
+    return (SystemMode_t)state;
+}
+
+/* Called by HAL when UART DMA reception completes (circular buffer wrap).
+ * Set scheduler flag from ISR so main loop can process frames.
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart5)
+    {
+        Scheduler_SetFlagFromISR(FLAG_RECEIVER_IBUS);
+    }
+}
+
+/* Also handle half-complete if needed by the DMA configuration. */
+void HAL_UART_RxHalfCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart5)
+    {
+        Scheduler_SetFlagFromISR(FLAG_RECEIVER_IBUS);
+    }
 }

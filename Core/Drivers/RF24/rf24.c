@@ -390,9 +390,9 @@ static void buildTestFrame(TelemetryFrame96_t *frame, uint16_t seq)
     frame->p2.euler_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.euler.x : 0.0f, 100.0f);
     frame->p2.euler_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.euler.y : 0.0f, 100.0f);
     frame->p2.euler_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.euler.z : 0.0f, 100.0f);
-    frame->p2.imu_m_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->sensor.imu.mx : 0.0f, 100.0f);
-    frame->p2.imu_m_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->sensor.imu.my : 0.0f, 100.0f);
-    frame->p2.imu_m_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->sensor.imu.mz : 0.0f, 100.0f);
+    frame->p2.imu_m_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.mag.x : 0.0f, 100.0f);
+    frame->p2.imu_m_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.mag.y : 0.0f, 100.0f);
+    frame->p2.imu_m_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.mag.z : 0.0f, 100.0f);
     frame->p2.accel_world_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.x : 0.0f, 100.0f);
     frame->p2.accel_world_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.y : 0.0f, 100.0f);
     frame->p2.accel_world_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.z : 0.0f, 100.0f);

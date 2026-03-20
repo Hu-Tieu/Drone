@@ -216,18 +216,19 @@ void Controller_Init(ControlSystem_t *sys)
     /* =====================================================
      * 1. ESTIMATOR LAYER
      * ===================================================== */
-    const float gyro_dt    = 1.0f/800.0f;   // 1 kHz loop
+    const float gyro_dt    = 1.0f/800.0f;   // 800 Hz
     const float accele_dt  = 1.0f/200.0f;    // 200 Hz 
     const float mag_dt     = 1.0f/25.0f;     // 25 Hz 
+    const float baro_dt    = 1.0f/50.0f;     // 50 Hz
     const float alpha = 0.98f; 
 
     CF_Init(&est->roll,  alpha, gyro_dt);
     CF_Init(&est->pitch, alpha, gyro_dt);
     CF_Init(&est->yaw,   alpha, gyro_dt);
 
-    LPF_FirstOrder_Init(&sys->accel_lpf.ax, 30.0f, accele_dt);
-    LPF_FirstOrder_Init(&sys->accel_lpf.ay, 30.0f, accele_dt);
-    LPF_FirstOrder_Init(&sys->accel_lpf.az, 30.0f, accele_dt);
+    LPF_FirstOrder_Init(&sys->accel_lpf.ax, 50.0f, accele_dt);
+    LPF_FirstOrder_Init(&sys->accel_lpf.ay, 50.0f, accele_dt);
+    LPF_FirstOrder_Init(&sys->accel_lpf.az, 50.0f, accele_dt);
 
     LPF_SecondOrder_Init(&sys->gyro_lpf.p, 80.0f, gyro_dt);
     LPF_SecondOrder_Init(&sys->gyro_lpf.q, 80.0f, gyro_dt);
@@ -236,6 +237,8 @@ void Controller_Init(ControlSystem_t *sys)
     LPF_FirstOrder_Init(&sys->mag_lpf.mx, 10.0f, mag_dt);
     LPF_FirstOrder_Init(&sys->mag_lpf.my, 10.0f, mag_dt);
     LPF_FirstOrder_Init(&sys->mag_lpf.mz, 10.0f, mag_dt);
+
+    LPF_FirstOrder_Init(&sys->sensor.baro, 25.0f, baro_dt);
     /* =====================================================
      * 2. ANGLE CONTROLLER (Outer Loop)
      * ===================================================== */
@@ -306,7 +309,72 @@ void Controller_Init(ControlSystem_t *sys)
     sig->u_esc.w_br = 0.0f;
 }
 
+void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator)
+{
+    /* =====================================================
+     * 0. ROLL & PITCH 
+     * ===================================================== */
+    float ax = state->accel_body.x;
+    float ay = state->accel_body.y;
+    float az = state->accel_body.z;
 
+    float gx = state->omega_body.x;
+    float gy = state->omega_body.y;
+    float gz = state->omega_body.z;
+
+    float mx = state->mag.x;
+    float my = state->mag.y;
+    float mz = state->mag.z;
+
+    float dt = estimator->roll.dt;
+
+    float acc_roll  = atan2f(ay, az);
+    float acc_pitch = atan2f(-ax, sqrtf(ay*ay + az*az));
+
+    float roll  = CF_Update(&estimator->roll,  gx, acc_roll);
+    float pitch = CF_Update(&estimator->pitch, gy, acc_pitch);
+
+    state->euler.x = roll;   
+    state->euler.y = pitch;  
+    /* =====================================================
+     * 1. YAW 
+     * ===================================================== */
+
+    float phi   = roll;
+    float theta = pitch;
+
+    float ctheta = cosf(theta);
+    if (fabsf(ctheta) < 0.01f)
+        ctheta = 0.01f;
+
+    // gyro already rad/s
+    float q = gy;
+    float r = gz;
+
+    float psi_dot = (q * sinf(phi) + r * cosf(phi)) / ctheta;
+
+    float yaw_gyro = estimator->yaw.angle + psi_dot * dt;
+    yaw_gyro = wrap_pi(yaw_gyro);
+
+
+    float mx_h = mx * cosf(theta) + mz * sinf(theta);
+
+    float my_h = mx * sinf(phi) * sinf(theta)
+               + my * cosf(phi)
+               - mz * sinf(phi) * cosf(theta);
+
+    float yaw_mag = -atan2f(my_h, mx_h);
+
+    float error = wrap_pi(yaw_mag - yaw_gyro);
+
+    float yaw = yaw_gyro +
+                (1.0f - estimator->yaw.alpha) * error;
+
+    yaw = wrap_pi(yaw);
+
+    estimator->yaw.angle = yaw;
+    state->euler.z = yaw;   // rad
+}
 void Estimator_Update(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator)
 {
     /* =====================================================
@@ -452,7 +520,7 @@ void Estimator_Update(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimat
     state->position.z = sensor->distance;
 }
 
-void Estimator_GyroUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator,GyroLPF_t *gyro_lpf)
+void Gyro_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator,GyroLPF_t *gyro_lpf)
 {
     /* =====================================================
      * 1. RAW GYRO
@@ -475,7 +543,7 @@ void Estimator_GyroUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEst
 
     }
 
-void Estimator_AccelUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, AccelLPF_t *accel_lpf)
+void Accel_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, AccelLPF_t *accel_lpf)
 {
     /* =====================================================
      * 1. RAW ACCEL
@@ -491,9 +559,13 @@ void Estimator_AccelUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEs
     ay = LPF_FirstOrder_Update(&accel_lpf->ay, ay);
     az = LPF_FirstOrder_Update(&accel_lpf->az, az);
 
+    state->accel_body.x = ax;
+    state->accel_body.y = ay;
+    state->accel_body.z = az;
+
     }
 
-void Estimator_MagUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, MagLPF_t *mag_lpf)
+void Mag_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, MagLPF_t *mag_lpf)
 {
     /* =====================================================
      * 1. RAW MAG
@@ -509,6 +581,10 @@ void Estimator_MagUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEsti
     mx = LPF_FirstOrder_Update(&mag_lpf->mx, mx);
     my = LPF_FirstOrder_Update(&mag_lpf->my, my);
     mz = LPF_FirstOrder_Update(&mag_lpf->mz, mz);
+
+    state->mag.x = mx;
+    state->mag.y = my;
+    state->mag.z = mz;
 }
 
 

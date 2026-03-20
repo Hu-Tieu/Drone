@@ -37,6 +37,16 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
 
+typedef enum
+{
+    SYSTEM_MODE_SAFETY = 0,        // CH4=0, CH5=0
+    SYSTEM_MODE_FLIGHT,            // CH4=0, CH5=1
+    SYSTEM_MODE_TEST,              // CH4=0, CH5=2
+    SYSTEM_MODE_MANUAL,            // CH4=1, CH5=0
+    SYSTEM_MODE_CALIBRATION,       // CH4=1, CH5=1
+    SYSTEM_MODE_RESERVED,          // CH4=1, CH5=2
+} SystemMode_t;
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

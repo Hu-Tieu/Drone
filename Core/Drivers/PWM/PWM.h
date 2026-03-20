@@ -5,7 +5,7 @@
 
 #define RPM_BUFFER_SIZE     16U          // có thể chỉnh sau này
 #define RPM_TIMEOUT_MS      300U
-#define PULSES_PER_REV      3.0f
+#define PULSES_PER_REV      2.0f
 #define TIM_PSC             89.0f
 
 #define TIM2_CLOCK 90000000
@@ -39,5 +39,8 @@ void    PWM_ESC_Calib(void);
 void    PWM_Motor_Write_All(uint32_t ccr1, uint32_t ccr2, uint32_t ccr3, uint32_t ccr4);
 void    Motor_RPM_Update_Half(float *rpm_out);
 void    Motor_RPM_Update_Full(float *rpm_out);
+
+/* Timestamp of last RPM capture (moved out of main.c) */
+extern volatile uint32_t rpm_last_capture;
 
 #endif

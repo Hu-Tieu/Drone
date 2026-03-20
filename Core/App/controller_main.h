@@ -44,9 +44,9 @@
 #define VBAT_MIN                10.5f        // Avoid division by zero
 
 /* ================= Motor Inverse Model ================= */
-#define A_COEFF                 5.962921280408465e-06f
-#define B_COEFF                 0.00619623727394045f 
-#define C_COEFF                 0.00089f
+#define A_COEFF                 4.715248338627949e-06
+#define B_COEFF                 0.007846454313235452
+#define C_COEFF                 0.001f
 /* ============================================================
  *                     SENSOR STRUCTURE
  *   (Main ghi trực tiếp dữ liệu cảm biến vào đây)
@@ -284,6 +284,11 @@ typedef struct
     Vec3f_t accel_world;    // [m/s²] gravity-compensated world accel
 
     /* =========================
+     * MAGNETOMETER
+     * ========================= */
+    Vec3f_t mag;            // [uT]   magnetometer readings
+    
+    /* =========================
      * CONTROL-RELATED
      * ========================= */
 
@@ -342,9 +347,9 @@ void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals);
 void ESC_Force(MotorCommand_t *u_esc);
 /* --- Estimator --- */
 void Estimator_Update(DroneSensor_t *sensor, DroneState_t *state, AttitudeEstimator_t *estimator);
-void Estimator_GyroUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator,GyroLPF_t *gyro_lpf);
-void Estimator_AccelUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, AccelLPF_t *accel_lpf);
-void Estimator_MagUpdate(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, MagLPF_t *mag_lpf);
+void Gyro_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator,GyroLPF_t *gyro_lpf);
+void Accel_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, AccelLPF_t *accel_lpf);
+void Mag_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, MagLPF_t *mag_lpf);
 void ESC_Output(MotorCommand_t *u_esc);
 void Motor_Inverse_Model(MotorCommand_t *motor_desired,MotorCommand_t *u_esc,float Vbat);
 void Motor_Mixer(Torque_t *torque_total, float thrust_sp, MotorCommand_t *motor_desired);

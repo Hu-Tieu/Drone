@@ -32,6 +32,7 @@
 #include "stdio.h"
 #include "string.h"
 #include "controller_scheduler.h"
+#include "controller_scheduler_tasks.h"
 #include "controller_main.h"
 #include "IMU/imu.h"
 #include "PWM/PWM.h"
@@ -118,15 +119,14 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   MX_FMPI2C1_Init();
   MX_UART5_Init();
   /* USER CODE BEGIN 2 */
-  Receiver_HandleTypeDef receiver;
-  uint32_t rpm_last_capture = 0;
+  /* receiver and rpm_last_capture are now module-level globals */
   IMU_Init();
   PWM_Init();
   if (tof_enabled)
   {
     TOF_Init();
   }
-  Receiver_Init(&receiver, &huart5);
+  Receiver_Init(&g_receiver, &huart5);
   ADC_Init();
   NRF24_Init();
   NRF24_BindControlSystem(&sys);
@@ -136,183 +136,42 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-while (1)
-{
-  static uint32_t pending_flags = 0U;
-  static uint32_t main_loop_last_report_ms = 0U;
-  static uint32_t main_loop_worst_cycles = 0U;
-  uint32_t main_loop_start_cycles = DWT->CYCCNT;
-    /* ===== Atomic snapshot =====
-     * Do not clear g_flag.system here.
-     * Each task flag is cleared atomically inside Scheduler_ReportTaskDelayAndClear(),
-     * so set timestamp and clear happen consistently for latency accounting.
-     */
+
+
+  while (1) {
+    static uint32_t pending_flags = 0U;
+    static uint32_t main_loop_last_report_ms = 0U;
+    static uint32_t main_loop_worst_cycles = 0U;
+    uint32_t main_loop_start_cycles = DWT->CYCCNT;
     __disable_irq();
-      pending_flags |= g_flag.system;
+    pending_flags |= g_flag.system;
+    g_flag.system &= ~pending_flags;
     __enable_irq();
 
-    if (pending_flags == 0U)
-    {
+    if (pending_flags == 0U) {
       goto MAIN_LOOP_REPORT;
     }
 
-    /* ===================== RF24 IRQ ===================== */
-    if ((pending_flags & FLAG_RF24_IRQ) != 0U)
+    SchedulerContext_t sched_ctx = { .sys = &sys };
+    Scheduler_RunTasks(&pending_flags, &sched_ctx);
+
+  MAIN_LOOP_REPORT:
     {
-    pending_flags &= ~FLAG_RF24_IRQ;
-    Scheduler_ReportTaskDelayAndClear(FLAG_RF24_IRQ);
-        NRF24_IRQHandler();
+      uint32_t main_loop_exec_cycles = DWT->CYCCNT - main_loop_start_cycles;
+      if (main_loop_exec_cycles > main_loop_worst_cycles) {
+        main_loop_worst_cycles = main_loop_exec_cycles;
+      }
     }
-
-    /* ===================== VBAT UPDATE ===================== */
-    if ((pending_flags & FLAG_VBAT_HALF_UPDATE) != 0U)
-    {
-    pending_flags &= ~FLAG_VBAT_HALF_UPDATE;
-    Scheduler_ReportTaskDelayAndClear(FLAG_VBAT_HALF_UPDATE);
-        ADC_GetVbat(&sys.sensor.battery, ADC_CHANNEL_VBAT_HALF);
+    if ((HAL_GetTick() - main_loop_last_report_ms) >= PERF_LOOP_WORST_LOG_PERIOD_MS) {
+      uint32_t cycles_per_us = (SystemCoreClock / 1000000U);
+      if (cycles_per_us != 0U) {
+        printf("[LOOP_WORST_MAIN] WHILE=%luus\r\n",
+          (unsigned long)(main_loop_worst_cycles / cycles_per_us));
+      }
+      main_loop_worst_cycles = 0U;
+      main_loop_last_report_ms = HAL_GetTick();
     }
-
-    if ((pending_flags & FLAG_VBAT_FULL_UPDATE) != 0U)
-    {
-    pending_flags &= ~FLAG_VBAT_FULL_UPDATE;
-    Scheduler_ReportTaskDelayAndClear(FLAG_VBAT_FULL_UPDATE);
-        ADC_GetVbat(&sys.sensor.battery, ADC_CHANNEL_VBAT_FULL);
-    }
-
-    if ((pending_flags & FLAG_GYRO_UPDATE) != 0U)
-    {
-    pending_flags &= ~FLAG_GYRO_UPDATE;
-    Scheduler_ReportTaskDelayAndClear(FLAG_GYRO_UPDATE);
-        Read_Gyro(&sys.sensor.imu);
-        Estimator_GyroUpdate(&sys.sensor, &sys.state, &sys.estimator, &sys.gyro_lpf);
-    }
-    
-    /* ============================================================
-     *                      RATE LOOP 400Hz
-     * ============================================================ */
-        if ((pending_flags & FLAG_RATE_LOOP) != 0U)
-    {
-        pending_flags &= ~FLAG_RATE_LOOP;
-        Scheduler_ReportTaskDelayAndClear(FLAG_RATE_LOOP);
-        Controller_Rate_Loop(&sys.rate_ctrl, &sys.state, &sys.signals.torque_pid, &sys.signals.rate_sp);
-        Motor_Mixer(&sys.signals.torque_pid,
-                    sys.signals.thrust_sp,
-                    &sys.signals.motor_desired);
-        Motor_Inverse_Model(&sys.signals.motor_desired,
-                            &sys.signals.u_esc,
-                            sys.sensor.battery);
-        if (sys.sensor.ibus.channel[4] == 0.0f)
-        {
-            // safety mode
-            sys.signals.u_esc.w_fl = sys.sensor.ibus.channel[2];
-            sys.signals.u_esc.w_fr = sys.sensor.ibus.channel[2];
-            sys.signals.u_esc.w_bl = sys.sensor.ibus.channel[2];
-            sys.signals.u_esc.w_br = sys.sensor.ibus.channel[2];
-
-            ESC_Output(&sys.signals.u_esc);
-        }
-        else if (sys.sensor.ibus.channel[5] == 1.0f)
-        {
-            // normal output
-            ESC_Output(&sys.signals.u_esc);
-        }
- 
-        NRF24_Send();
-    }
-
-    /* ============================================================
-     *                      RPM FEEDBACK
-     * ============================================================ */
-        if ((pending_flags & FLAG_RPM_HALF) != 0U)
-        {
-        pending_flags &= ~FLAG_RPM_HALF;
-        Scheduler_ReportTaskDelayAndClear(FLAG_RPM_HALF);
-        Motor_RPM_Update_Half(&sys.sensor.motor_rpm);
-        rpm_last_capture = HAL_GetTick();
-        }
-
-        if ((pending_flags & FLAG_RPM_FULL) != 0U)
-        {
-        pending_flags &= ~FLAG_RPM_FULL;
-        Scheduler_ReportTaskDelayAndClear(FLAG_RPM_FULL);
-        Motor_RPM_Update_Full(&sys.sensor.motor_rpm);
-        rpm_last_capture = HAL_GetTick();
-        }
-    /* ============================================================
-     *                      ANGLE LOOP 200Hz
-     * ============================================================ */
-        if ((pending_flags & FLAG_ANGLE_LOOP) != 0U)
-    {
-        pending_flags &= ~FLAG_ANGLE_LOOP;
-        Scheduler_ReportTaskDelayAndClear(FLAG_ANGLE_LOOP);
-            /* TODO: angle loop */
-    }
-    /* ============================================================
-     *                      VELOCITY LOOP 100Hz
-     * ============================================================ */
-        if ((pending_flags & FLAG_VELOCITY_LOOP) != 0U)
-    {
-        pending_flags &= ~FLAG_VELOCITY_LOOP;
-        Scheduler_ReportTaskDelayAndClear(FLAG_VELOCITY_LOOP);
-        Read_Barometer(&sys.sensor.baro);
-        Read_Accel(&sys.sensor.imu);
-        Receiver_ProcessIBUS(&receiver, &sys.sensor.ibus);
-        Receiver_Mapping(&sys.sensor, &sys.signals);
-    }
-
-    /* ============================================================
-     *                      POSITION LOOP 25Hz
-     * ============================================================ */
-        if ((pending_flags & FLAG_POSITION_LOOP) != 0U)
-    {
-        pending_flags &= ~FLAG_POSITION_LOOP;
-        Scheduler_ReportTaskDelayAndClear(FLAG_POSITION_LOOP);
-        if (HAL_GetTick() - rpm_last_capture > 500)
-        {
-            sys.sensor.motor_rpm = 0.0f;
-            rpm_last_capture = HAL_GetTick();
-        }
-        Read_Magnetic(&sys.sensor.imu);
-    }
-
-        if (tof_enabled)
-        {
-            if ((pending_flags & FLAG_VL53CX_IRQ) != 0U)
-            {
-                pending_flags &= ~FLAG_VL53CX_IRQ;
-                Scheduler_ReportTaskDelayAndClear(FLAG_VL53CX_IRQ);
-                TOF_distance(&tof_last_distance_mm);
-                sys.sensor.distance = tof_last_distance_mm;
-            }
-        }
-
-        if ((pending_flags & FLAG_LOWER_LOOP) != 0U)
-        {
-            pending_flags &= ~FLAG_LOWER_LOOP;
-            Scheduler_ReportTaskDelayAndClear(FLAG_LOWER_LOOP);
-        }
-
-    MAIN_LOOP_REPORT:
-        {
-          uint32_t main_loop_exec_cycles = DWT->CYCCNT - main_loop_start_cycles;
-          if (main_loop_exec_cycles > main_loop_worst_cycles)
-          {
-            main_loop_worst_cycles = main_loop_exec_cycles;
-          }
-        }
-
-        if ((HAL_GetTick() - main_loop_last_report_ms) >= PERF_LOOP_WORST_LOG_PERIOD_MS)
-        {
-          uint32_t cycles_per_us = (SystemCoreClock / 1000000U);
-          if (cycles_per_us != 0U)
-          {
-            printf("[LOOP_WORST_MAIN] WHILE=%luus\r\n",
-              (unsigned long)(main_loop_worst_cycles / cycles_per_us));
-          }
-          main_loop_worst_cycles = 0U;
-          main_loop_last_report_ms = HAL_GetTick();
-        }
-}
+  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

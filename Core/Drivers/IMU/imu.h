@@ -80,9 +80,11 @@ typedef struct {
 
 /* Default Configuration Values */
 #define BMP388_REG_PWR_CTRL_VALUE       0x33
-#define BMP388_REG_OSR_VALUE            0x0C
-#define BMP388_REG_ODR_VALUE            0x03
-#define BMP388_REG_CONFIG_VALUE         0x02
+#define BMP388_REG_OSR_VALUE            0x03    // teamperature oversampling x1, pressure oversampling x8
+#define BMP388_REG_ODR_VALUE            0x02    // 50 Hz
+#define BMP388_REG_CONFIG_VALUE         0x02    // IIR filter coefficient 3 (see datasheet for details)
+
+
 
 /*****************************************************
  *                 BMM150 DEFINITIONS
@@ -163,10 +165,10 @@ typedef struct {
 #define BMX160_GYRO_OFFSET_SENSITIVITY   0.061f    // deg/s per LSB
 
 #define BMX160_REG_ACCEL_CONFIG_VALUE   0x19        // ODR 200Hz
-#define BMX160_REG_ACCEL_RANGE_VALUE    0x03
-#define BMX160_REG_GYRO_CONFIG_VALUE    0x2B        // ODR 1000Hz
-#define BMX160_REG_GYRO_RANGE_VALUE     0x04        
-#define BMX160_REG_MAGN_CONFIG_VALUE    0x06
+#define BMX160_REG_ACCEL_RANGE_VALUE    0x03        // ±2g
+#define BMX160_REG_GYRO_CONFIG_VALUE    0x2B        // ODR 800Hz
+#define BMX160_REG_GYRO_RANGE_VALUE     0x04        // ±125 dps
+#define BMX160_REG_MAGN_CONFIG_VALUE    0x06        // ODR 25Hz
 #define BMX160_REG_INT_ENABLE_1_VALUE   0x10
 #define BMX160_REG_INT_OUT_CTRL_VALUE   0x08
 #define BMX160_REG_INT_MAP_1_VALUE      0x80
@@ -226,6 +228,7 @@ void bmx160_init(void);
 void Read_Gyro(IMU_Data_t *imu_data);
 void Read_Accel(IMU_Data_t *imu_data);
 void Read_Magnetic(IMU_Data_t *imu_data);
+HAL_StatusTypeDef IMU_ReadScheduled(IMU_Data_t *imu_data, uint8_t read_accel, uint8_t read_mag);
 void bmp388_init(void);
 void Read_Barometer(Baro_Data_t *baro);
 void IMU_Init(void);

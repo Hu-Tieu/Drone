@@ -1,7 +1,9 @@
 #include "imu.h"
 #include "i2c.h"
+#include "controller_scheduler.h"
 #include "main.h"
 #include <string.h>
+#include <stdbool.h>
 
 I2C_HandleTypeDef *hi2c3_IMU      = &hi2c3;
 
@@ -19,9 +21,19 @@ typedef enum {
 static volatile IMU_DMA_Request_t g_imu_dma_req = IMU_DMA_REQ_NONE;
 static IMU_Data_t *g_imu_dma_target = NULL;
 static Baro_Data_t *g_baro_dma_target = NULL;
+static IMU_Data_t *g_gyro_frame_target = NULL;
+/* Indicates an in-progress scheduled frame read. Mode:
+ * 0 = single gyro buffer (uses g_imu_dma_gyro_buf)
+ * 1 = combined gyro+accel
+ * 2 = combined gyro+accel+mag
+ */
+static uint8_t g_gyro_frame_active = 0U;
+static uint8_t g_gyro_frame_mode = 0U;
 static uint8_t g_imu_dma_gyro_buf[BMX160_GYRO_LEN];
 static uint8_t g_imu_dma_accel_buf[BMX160_ACCEL_LEN];
 static uint8_t g_imu_dma_mag_buf[BMX160_MAG_LEN];
+/* Combined frame buffer for scheduled reads (gyro [+ accel] [+ mag]) */
+static uint8_t g_imu_dma_frame_buf[BMX160_GYRO_LEN + BMX160_ACCEL_LEN + BMX160_MAG_LEN];
 static uint8_t g_baro_dma_buf[BMP388_LEN];
 
 static HAL_StatusTypeDef imu_start_read_dma(IMU_DMA_Request_t req,
@@ -618,6 +630,72 @@ void Read_Magnetic(IMU_Data_t *imu_data)
                              imu_data);
 }
 
+HAL_StatusTypeDef IMU_ReadScheduled(IMU_Data_t *imu_data, uint8_t read_accel, uint8_t read_mag)
+{
+    HAL_StatusTypeDef st;
+
+    if (imu_data == NULL)
+    {
+        return HAL_ERROR;
+    }
+
+    g_gyro_frame_target = imu_data;
+
+    /* Choose combined single-DMA transaction when accel/mag also requested. */
+    if ((read_accel != 0U) && (read_mag != 0U))
+    {
+        /* gyro + accel + mag */
+        g_gyro_frame_mode = 2U;
+        st = imu_start_read_dma(IMU_DMA_REQ_GYRO,
+                                BMX160_REG_MAG_DATA_0,
+                                g_imu_dma_frame_buf,
+                                BMX160_MAG_LEN + BMX160_GYRO_LEN + BMX160_ACCEL_LEN,
+                                imu_data);
+    }
+    else if (read_accel != 0U)
+    {
+        /* gyro + accel */
+        g_gyro_frame_mode = 1U;
+        st = imu_start_read_dma(IMU_DMA_REQ_GYRO,
+                                BMX160_REG_GYRO_DATA_0,
+                                g_imu_dma_frame_buf,
+                                BMX160_GYRO_LEN + BMX160_ACCEL_LEN,
+                                imu_data);
+    }
+    else
+    {
+        /* single gyro */
+        g_gyro_frame_mode = 0U;
+        st = imu_start_read_dma(IMU_DMA_REQ_GYRO,
+                                BMX160_REG_GYRO_DATA_0,
+                                g_imu_dma_gyro_buf,
+                                BMX160_GYRO_LEN,
+                                imu_data);
+    }
+
+    if (st == HAL_OK)
+    {
+        g_gyro_frame_active = 1U;
+    }
+    else
+    {
+        g_gyro_frame_target = NULL;
+        g_gyro_frame_mode = 0U;
+        g_gyro_frame_active = 0U;
+    }
+
+    return st;
+}
+
+static void imu_finish_gyro_frame(void)
+{
+    g_gyro_frame_target = NULL;
+    g_gyro_frame_mode = 0U;
+    g_gyro_frame_active = 0U;
+    Scheduler_SetFlagFromISR(FLAG_GYRO_UPDATE);
+}
+/* Note: chained helpers removed - combined frame reads used instead. */
+
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
     IMU_Data_t *imu_target;
@@ -646,23 +724,45 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
     {
         if (imu_target != NULL)
         {
-            imu_apply_gyro(imu_target, g_imu_dma_gyro_buf);
+            if (g_gyro_frame_active && (imu_target == g_gyro_frame_target) && (g_gyro_frame_mode != 0U))
+            {
+                /* Combined scheduled frame: parse combined frame buffer.
+                 * Note: when reading mag+gyro+accel starting at BMX160_REG_MAG_DATA_0
+                 * the order in the I2C stream is MAG (offset 0), GYRO (offset = 0x0C-0x04),
+                 * ACCEL (offset = 0x12-0x04). For the gyro+accel-only case the stream
+                 * starts at GYRO (offset 0) followed by ACCEL.
+                 */
+                const uint8_t *frame = g_imu_dma_frame_buf;
+                if (g_gyro_frame_mode == 2U)
+                {
+                    const uint8_t *mag_frame = frame; /* starts at BMX160_REG_MAG_DATA_0 */
+                    const uint8_t gyro_offset = (uint8_t)(BMX160_REG_GYRO_DATA_0 - BMX160_REG_MAG_DATA_0);
+                    const uint8_t accel_offset = (uint8_t)(BMX160_REG_ACCEL_DATA_0 - BMX160_REG_MAG_DATA_0);
+                    const uint8_t *gyro_frame = frame + gyro_offset;
+                    const uint8_t *accel_frame = frame + accel_offset;
+
+                    imu_apply_gyro(imu_target, gyro_frame);
+                    imu_apply_accel(imu_target, accel_frame);
+                    imu_apply_magnetic(imu_target, mag_frame);
+                }
+                else /* mode == 1: gyro + accel starting at GYRO reg */
+                {
+                    imu_apply_gyro(imu_target, frame);
+                    imu_apply_accel(imu_target, frame + BMX160_GYRO_LEN);
+                }
+
+                imu_finish_gyro_frame();
+            }
+            else
+            {
+                /* Single gyro-only transaction */
+                imu_apply_gyro(imu_target, g_imu_dma_gyro_buf);
+            }
         }
     }
-    else if (req == IMU_DMA_REQ_ACCEL)
-    {
-        if (imu_target != NULL)
-        {
-            imu_apply_accel(imu_target, g_imu_dma_accel_buf);
-        }
-    }
-    else if (req == IMU_DMA_REQ_MAG)
-    {
-        if (imu_target != NULL)
-        {
-            imu_apply_magnetic(imu_target, g_imu_dma_mag_buf);
-        }
-    }
+    /* Standalone ACCEL/MAG transactions are intentionally not processed here
+     * because accel and mag are handled together with gyro in the combined
+     * scheduled frame branch above. This avoids duplicate parsing. */
     else if (req == IMU_DMA_REQ_BARO)
     {
         if (baro_target != NULL)
@@ -679,5 +779,8 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
         g_imu_dma_req = IMU_DMA_REQ_NONE;
         g_imu_dma_target = NULL;
         g_baro_dma_target = NULL;
+        g_gyro_frame_target = NULL;
+        g_gyro_frame_mode = 0U;
+        g_gyro_frame_active = 0U;
     }
 }

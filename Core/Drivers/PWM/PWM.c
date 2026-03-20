@@ -14,7 +14,9 @@
 #include "PWM.h"
 #include "tim.h"
 static Motor_System_t motor;
-static volatile uint32_t rpm_buffer[RPM_BUFFER_SIZE];
+static uint32_t rpm_buffer[RPM_BUFFER_SIZE];
+/* Last main-loop timestamp where RPM was captured (ms). */
+volatile uint32_t rpm_last_capture = 0U;
 
 /* ================= HELPER FUNCTIONS ================= */
 
@@ -38,7 +40,7 @@ void PWM_Init(void)
 
     /* Start Encoder DMA (TIM5) */
     HAL_TIM_IC_Start_DMA(&htim5, TIM_CHANNEL_2, rpm_buffer, RPM_BUFFER_SIZE);
-
+    PWM_Motor_Write_All(CCR_MIN, CCR_MIN, CCR_MIN, CCR_MIN);
 }
 
 /* ================= RC COMMAND ================= */
