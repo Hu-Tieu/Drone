@@ -23,6 +23,8 @@
 #error "MAG_UPDATE_HZ must divide GYRO_UPDATE_HZ"
 #endif
 
+static SystemMode_t mode = SYSTEM_MODE_SAFETY;
+static ModeConfig_t *cfg = &mode_table[SYSTEM_MODE_SAFETY];
 /* ---------------- Task handlers ---------------- */
 
 // Schedule IMU DMA read at gyro rate; include accel/mag only when due
@@ -47,47 +49,67 @@ static void handle_gyro_update_pipeline(SchedulerContext_t *ctx) {
      * ===================================================== */
 
      Gyro_LPF(&sys->sensor, &sys->state, &sys->estimator, &sys->gyro_lpf);
+     Estimator_Angle(&sys->state, &sys->estimator, GYRO_ANGLE);
 
-
+    if (mode == SYSTEM_MODE_SAFETY) {
+        Rate_PID_Reset(&sys->rate_ctrl);
+        Angle_PID_Reset(&sys->angle_ctrl);
+        ESC_Force(&sys->signals.u_esc);
+        ESC_Output(&sys->signals.u_esc);
+    }
+    
+    if (mode == SYSTEM_MODE_TEST) {
+        Rate_PID_Reset(&sys->rate_ctrl);
+        Angle_PID_Reset(&sys->angle_ctrl);
+        ESC_Output(&sys->signals.u_esc);
+    }
     /* =====================================================
      *                   RATE LOOP 400Hz
      * ===================================================== */
-    if ((count % (GYRO_UPDATE_HZ / RATE_LOOP_HZ)) == 0U) {
+    if ( (count % (GYRO_UPDATE_HZ / RATE_LOOP_HZ)) == 0U) {
+        if (cfg->enable_rate)
+        {
+            Controller_Rate_Loop(&sys->rate_ctrl, &sys->state,&sys->signals.torque_pid, &sys->signals.rate_sp);
 
-        Controller_Rate_Loop(&sys->rate_ctrl, &sys->state,&sys->signals.torque_pid, &sys->signals.rate_sp);
+            Motor_Mixer(&sys->signals.torque_pid, sys->signals.thrust_sp,&sys->signals.motor_desired);
 
-        Motor_Mixer(&sys->signals.torque_pid, sys->signals.thrust_sp,&sys->signals.motor_desired);
+            Motor_Inverse_Model(&sys->signals.motor_desired,&sys->signals.u_esc, sys->sensor.battery);
 
-        Motor_Inverse_Model(&sys->signals.motor_desired,&sys->signals.u_esc, sys->sensor.battery);
+            ESC_Output(&sys->signals.u_esc);
+        }
+        
+        if (cfg->enable_motor_output)
+        {
+            ESC_Output(&sys->signals.u_esc);
+        }
+        
 
-        SystemMode_t mode =  Receiver_Decode_CH45(&sys->sensor.ibus);
-
-        if (mode == SYSTEM_MODE_SAFETY)     PWM_Motor_Write_All(CCR_MIN, CCR_MIN, CCR_MIN, CCR_MIN);
-
-        else if (mode == SYSTEM_MODE_FLIGHT)  ESC_Output(&sys->signals.u_esc);
         NRF24_Send();
+        
     }
 
     /* =====================================================
      *                   ACCEL LPF 200Hz
      * ===================================================== */
-    if (count % (GYRO_UPDATE_HZ/ACCEL_UPDATE_HZ) == 0) 
-    Accel_LPF(&sys->sensor, &sys->state,&sys->estimator, &sys->accel_lpf);
-    
+    if (count % (GYRO_UPDATE_HZ/ACCEL_UPDATE_HZ) == 0) {
+        Accel_LPF(&sys->sensor, &sys->state,&sys->estimator, &sys->accel_lpf);
+        Estimator_Angle(&sys->state, &sys->estimator, ACCEL_ANGLE);
+        cfg = &mode_table[mode];
+    }
 
     /* =====================================================
      *                   ANGLE LOOP 200Hz
      * ===================================================== */
-    if ((count % (GYRO_UPDATE_HZ / ANGLE_LOOP_HZ)) == 0U) {
-
-        // Estimator_UpdateAttitude(&sys->estimator, &sys->state);
+    if (cfg->enable_angle && (count % (GYRO_UPDATE_HZ / ANGLE_LOOP_HZ)) == 0U) {
+        
+        
     }
 
     /* =====================================================
      *                   VELOCITY LOOP 100Hz
      * ===================================================== */
-    if ((count % (GYRO_UPDATE_HZ / VELOCITY_LOOP_HZ)) == 0U) {
-        
+    if (cfg->enable_velocity && (count % (GYRO_UPDATE_HZ / VELOCITY_LOOP_HZ)) == 0U) {
+        Convert_BodyToWorld(&sys->state);
     }
 
     /* =====================================================
@@ -95,20 +117,26 @@ static void handle_gyro_update_pipeline(SchedulerContext_t *ctx) {
     * ===================================================== */
     if ((count % (GYRO_UPDATE_HZ / BARO_UPDATE_HZ)) == 0U) {
         Read_Barometer(&sys->sensor.baro);
-
+        Barometer_LPF(&sys->sensor, &sys->state, &sys->estimator, &sys->baro_lpf);
     }
-
-    /* =====================================================
-     *                   POSITION LOOP 25Hz
+     /* =====================================================
+     *                   MAG LPF 25Hz
      * ===================================================== */
-    if ((count % (GYRO_UPDATE_HZ / POSITION_LOOP_HZ)) == 0U) {
-
+    if ((count % (GYRO_UPDATE_HZ/ MAG_UPDATE_HZ))== 0U)
+    {
         Mag_LPF(&sys->sensor, &sys->state,&sys->estimator, &sys->mag_lpf);
-
+        Estimator_Angle(&sys->state, &sys->estimator, MAG_ANGLE);
         if (HAL_GetTick() - rpm_last_capture > 500U) {
             sys->sensor.motor_rpm = 0.0f;
             rpm_last_capture = HAL_GetTick();
         }
+    }
+    /* =====================================================
+     *                   POSITION LOOP 25Hz
+     * ===================================================== */
+    if (cfg->enable_position && (count % (GYRO_UPDATE_HZ / POSITION_LOOP_HZ)) == 0U) {
+
+        
     }
 }
 
@@ -131,6 +159,16 @@ static void handle_receiver(SchedulerContext_t *ctx) {
     ControlSystem_t *sys = ctx->sys;
     if (Receiver_ProcessIBUS(&g_receiver, &sys->sensor.ibus)) {
         Receiver_Mapping(&sys->sensor, &sys->signals);
+        mode = Receiver_Decode_CH45(&sys->sensor.ibus);
+        if (mode <= SYSTEM_MODE_RESERVED)
+            mode = SYSTEM_MODE_SAFETY;
+        else if (mode == SYSTEM_MODE_TEST)
+        {
+            sys->signals.u_esc.w_bl = sys->sensor.ibus.channel[2];
+            sys->signals.u_esc.w_br = sys->sensor.ibus.channel[2];
+            sys->signals.u_esc.w_fl = sys->sensor.ibus.channel[2];
+            sys->signals.u_esc.w_fr = sys->sensor.ibus.channel[2];
+        }
     }
 }
 

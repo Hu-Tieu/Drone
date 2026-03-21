@@ -1,5 +1,6 @@
 #include "receiver.h"
 #include "controller_scheduler.h"
+#include "controller_scheduler_tasks.h"
 #include "usart.h"
 
 /* Global receiver instance used by scheduler/tasks. */
@@ -10,31 +11,39 @@ Receiver_HandleTypeDef g_receiver;
 void Receiver_Init(Receiver_HandleTypeDef *hrx,
                    UART_HandleTypeDef *huart)
 {
-    hrx->huart   = huart;
+    hrx->huart = huart;
     hrx->old_pos = 0;
+
+    /* 1. Stop UART DMA (đúng cách) */
+    HAL_UART_DMAStop(hrx->huart);
+
+    /* 2. Abort DMA (đảm bảo sạch) */
+    if (hrx->huart->hdmarx) {
+        HAL_DMA_Abort(hrx->huart->hdmarx);
+    }
+
+    /* 3. Disable UART */
     __HAL_UART_DISABLE(hrx->huart);
 
-    /* 2. Disable DMA stream */
-    HAL_DMA_Abort(hrx->huart->hdmarx);
-
-    /* 3. Clear toàn bộ lỗi UART */
+    /* 4. Clear ALL flags */
     __HAL_UART_CLEAR_OREFLAG(hrx->huart);
     __HAL_UART_CLEAR_FEFLAG(hrx->huart);
     __HAL_UART_CLEAR_NEFLAG(hrx->huart);
     __HAL_UART_CLEAR_PEFLAG(hrx->huart);
+    __HAL_UART_CLEAR_IDLEFLAG(hrx->huart);
 
-    /* 4. Flush DR register */
+    /* 5. Flush DR */
     volatile uint32_t tmp;
     tmp = hrx->huart->Instance->DR;
     (void)tmp;
 
-    /* 5. Enable lại UART */
+    /* 6. Re-enable UART */
     __HAL_UART_ENABLE(hrx->huart);
 
-    /* 6. Start lại DMA */
-        HAL_UART_Receive_DMA(hrx->huart,
-                            hrx->dma_buffer,
-                            RX_BUFFER_SIZE);
+    /* 7. Restart DMA */
+    HAL_UART_Receive_DMA(hrx->huart,
+                         hrx->dma_buffer,
+                         RX_BUFFER_SIZE);
 }
 
 /* ================= CHECKSUM ================= */

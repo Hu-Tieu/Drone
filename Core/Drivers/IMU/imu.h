@@ -42,6 +42,9 @@ typedef struct
     float my;
     float mz;
 
+    /* Estimated gravity magnitude [m/s^2] computed during calibration */
+    float g_est;
+
 } IMU_Data_t;
 typedef struct
 {
@@ -118,6 +121,8 @@ typedef struct {
 /* ================= ACCEL ================= */
 #define BMX160_REG_ACCEL_DATA_0      0x12
 #define BMX160_ACCEL_LEN             6
+/* Number of accel samples to average during calibration */
+#define ACCEL_CALIB_SAMPLES 200
 /* Configuration Registers */
 #define BMX160_REG_ACCEL_CONFIG         0x40
 #define BMX160_REG_ACCEL_RANGE          0x41
@@ -228,6 +233,9 @@ void bmx160_init(void);
 void Read_Gyro(IMU_Data_t *imu_data);
 void Read_Accel(IMU_Data_t *imu_data);
 void Read_Magnetic(IMU_Data_t *imu_data);
+/* Blocking read + apply mag calibration immediately */
+void Read_Magnetic_Blocking(IMU_Data_t *imu_data);
+void Calib_Accel(IMU_Data_t *imu);
 HAL_StatusTypeDef IMU_ReadScheduled(IMU_Data_t *imu_data, uint8_t read_accel, uint8_t read_mag);
 void bmp388_init(void);
 void Read_Barometer(Baro_Data_t *baro);

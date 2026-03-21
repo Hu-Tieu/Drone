@@ -51,7 +51,34 @@
  *                     SENSOR STRUCTURE
  *   (Main ghi trực tiếp dữ liệu cảm biến vào đây)
  * ============================================================ */
+#define GYRO_ANGLE 1
+#define ACCEL_ANGLE 2
+#define MAG_ANGLE 3
+/* ================= PID Parameters ================= */
+#define ROLL_KP                 0.0f
+#define ROLL_KI                 0.0f
+#define ROLL_KD                 0.0f
 
+#define PITCH_KP                0.0f
+#define PITCH_KI                0.0f
+#define PITCH_KD                0.0f
+
+#define YAW_KP                  0.0f
+#define YAW_KI                  0.0f
+#define YAW_KD                  0.0f
+
+#define P_KP                    0.0f
+#define P_KI                    0.0f
+#define P_KD                    0.0f
+
+#define Q_KP                    0.0f
+#define Q_KI                    0.0f
+#define Q_KD                    0.0f
+
+#define R_KP                    0.0f
+#define R_KI                    0.0f
+#define R_KD                    0.0f
+/* ================= PID ================= */
 typedef struct {
 
     IMU_Data_t imu;
@@ -85,9 +112,9 @@ typedef struct {
 } ComplementaryFilter_t;
 
 typedef struct {
-    ComplementaryFilter_t roll;
-    ComplementaryFilter_t pitch;
-    ComplementaryFilter_t yaw;
+    ComplementaryFilter_t phi;
+    ComplementaryFilter_t theta;
+    ComplementaryFilter_t psi;
 
 } AttitudeEstimator_t;
 /* ============================================================
@@ -282,12 +309,20 @@ typedef struct
 
     Vec3f_t accel_body;     // [m/s²] raw accel (IMU frame)
     Vec3f_t accel_world;    // [m/s²] gravity-compensated world accel
+    /* Estimated gravity magnitude used for compensation (m/s^2) */
+    float gravity_est;
 
     /* =========================
      * MAGNETOMETER
      * ========================= */
     Vec3f_t mag;            // [uT]   magnetometer readings
     
+    /* =========================
+     * HEIGHT
+     * ========================= */
+    float baro_altitude;    // [m]    barometric altitude
+    float lazer_altitude;   // [m]    laser rangefinder altitude
+
     /* =========================
      * CONTROL-RELATED
      * ========================= */
@@ -308,6 +343,7 @@ typedef struct {
     AccelLPF_t accel_lpf;
     GyroLPF_t gyro_lpf;
     MagLPF_t mag_lpf;
+    FirstOrderLPF_t baro_lpf;
     /* === Estimation result === */
     AttitudeEstimator_t estimator;
     Vec3f_t attitude;     // roll pitch yaw (deg)
@@ -332,28 +368,22 @@ typedef struct {
  * ============================================================ */
 
 /* --- Complementary Filter --- */
-void CF_Init(ComplementaryFilter_t *f, float alpha, float dt);
-float CF_Update(ComplementaryFilter_t *f,
-                float gyro_rate,
-                float acc_angle);
 void Controller_Init(ControlSystem_t *sys);
-void LPF_FirstOrder_Init(FirstOrderLPF_t *f, float cutoff_freq, float dt);
-float LPF_FirstOrder_Update(FirstOrderLPF_t *f, float input);
-void LPF_SecondOrder_Init(SecondOrderLPF_t *f, float cutoff_freq, float dt);
-float LPF_SecondOrder_Update(SecondOrderLPF_t *f, float input);
-/* --- Sensor --- */
-void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals);
-
-void ESC_Force(MotorCommand_t *u_esc);
-/* --- Estimator --- */
-void Estimator_Update(DroneSensor_t *sensor, DroneState_t *state, AttitudeEstimator_t *estimator);
 void Gyro_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator,GyroLPF_t *gyro_lpf);
 void Accel_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, AccelLPF_t *accel_lpf);
 void Mag_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, MagLPF_t *mag_lpf);
+void Barometer_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, FirstOrderLPF_t *baro_lpf);
+/* --- Sensor --- */
+void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals);
+void ESC_Force(MotorCommand_t *u_esc);
+/* --- Estimator --- */
+void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator,uint8_t TYPE);
+void Convert_BodyToWorld(DroneState_t *state);
 void ESC_Output(MotorCommand_t *u_esc);
 void Motor_Inverse_Model(MotorCommand_t *motor_desired,MotorCommand_t *u_esc,float Vbat);
 void Motor_Mixer(Torque_t *torque_total, float thrust_sp, MotorCommand_t *motor_desired);
-
+void Rate_PID_Reset(RateController_t *rctrl);
+void Angle_PID_Reset(AngleController_t *actrl);
 /* --- Control Loops --- */
 void Controller_Rate_Loop(RateController_t *rctrl, DroneState_t *state, Torque_t *torque_pid, RateSetpoint_t *rate_sp);
 void Controller_Angle_Loop(ControlSystem_t *sys);

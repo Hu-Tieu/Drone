@@ -2,8 +2,9 @@
 #include "i2c.h"
 #include "controller_scheduler.h"
 #include "main.h"
-#include <string.h>
-#include <stdbool.h>
+#include "string.h"
+#include "stdbool.h"
+#include "math.h"
 
 I2C_HandleTypeDef *hi2c3_IMU      = &hi2c3;
 
@@ -602,7 +603,31 @@ void IMU_Init(void) {
     bmx160_init();
     bmp388_init();
 }
+void Calib_Accel(IMU_Data_t *imu)
+{
+    uint8_t buf[BMX160_ACCEL_LEN];
+    const int N = ACCEL_CALIB_SAMPLES;
+    float sum = 0.0f;
+    IMU_Data_t tmp;
 
+    for (int i = 0; i < N; ++i) {
+        /* read full accel packet (6 bytes) */
+        HAL_I2C_Mem_Read(hi2c3_IMU,BMX160_ADDRESS,BMX160_REG_ACCEL_DATA_0,
+                            I2C_MEMADD_SIZE_8BIT,buf,BMX160_ACCEL_LEN,HAL_MAX_DELAY);
+        imu_apply_accel(&tmp, buf);
+
+        float mag = sqrtf(tmp.ax * tmp.ax + tmp.ay * tmp.ay + tmp.az * tmp.az);
+        sum += mag;
+
+        HAL_Delay(6); // small pause between samples (ODR 200Hz -> ~5ms; shorter delay acceptable)
+    }
+
+    imu->g_est = sum / (float)N;
+    /* store last accel/raw values in imu structure as well */
+    imu->ax = tmp.ax;
+    imu->ay = tmp.ay;
+    imu->az = tmp.az;
+}
 void Read_Gyro(IMU_Data_t *imu)
 {
     (void)imu_start_read_dma(IMU_DMA_REQ_GYRO,
@@ -628,6 +653,21 @@ void Read_Magnetic(IMU_Data_t *imu_data)
                              g_imu_dma_mag_buf,
                              BMX160_MAG_LEN,
                              imu_data);
+}
+
+void Read_Magnetic_Blocking(IMU_Data_t *imu_data)
+{
+    uint8_t buf[BMX160_MAG_LEN];
+
+    HAL_I2C_Mem_Read(hi2c3_IMU,
+                     BMX160_ADDRESS,
+                     BMX160_REG_MAG_DATA_0,
+                     I2C_MEMADD_SIZE_8BIT,
+                     buf,
+                     BMX160_MAG_LEN,
+                     HAL_MAX_DELAY);
+
+    imu_apply_magnetic(imu_data, buf);
 }
 
 HAL_StatusTypeDef IMU_ReadScheduled(IMU_Data_t *imu_data, uint8_t read_accel, uint8_t read_mag)

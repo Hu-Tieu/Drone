@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* Avoid circular include with controller_scheduler_tasks.h by forward-declaring SystemMode_t. */
+typedef enum SystemMode_t SystemMode_t;
+
 #define IBUS_FRAME_SIZE   32
 #define RX_BUFFER_SIZE    128
 #define IBUS_CHANNELS     14

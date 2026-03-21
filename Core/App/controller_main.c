@@ -47,7 +47,9 @@ void ESC_Force(MotorCommand_t *u_esc) {
  * ========================================================= */
 void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals) {
 
-    signals->thrust_sp = sensor->ibus.channel[2] * (DRONE_MASS * GRAVITY )*1.5f;  
+    /* Use calibrated gravity estimate if available, otherwise fallback */
+    float g = (sensor->imu.g_est > 0.1f) ? sensor->imu.g_est : GRAVITY;
+    signals->thrust_sp = sensor->ibus.channel[2] * (DRONE_MASS * g) * 1.5f;  
     signals->rate_sp.p = (sensor->ibus.channel[0]-0.5f) * 2 * M_PI/2;   // Roll rate setpoint (rad/s)
     signals->rate_sp.q = (sensor->ibus.channel[1]-0.5f) * 2 * M_PI/2;   // Pitch rate setpoint (rad/s)
     signals->rate_sp.r = (sensor->ibus.channel[3]-0.5f) * 2 * M_PI/2;   // Yaw rate setpoint (rad/s)
@@ -61,14 +63,18 @@ void CF_Init(ComplementaryFilter_t *f, float alpha, float T)
     f->angle = 0.0f;
 }
 
-float CF_Update(ComplementaryFilter_t *f,float gyro_rate,float acc_angle)
+static float CF_Predict(ComplementaryFilter_t *f, float gyro_rate)
 {
-    /* Integrate gyro */
     f->angle += gyro_rate * f->dt;
+    return f->angle;
+}
 
-    /* Blend */
-    f->angle = f->alpha * f->angle +
-               (1.0f - f->alpha) * acc_angle;
+static float CF_Correct(ComplementaryFilter_t *f, float acc_angle)
+{
+    float error = wrap_pi(acc_angle - f->angle);
+
+    f->angle += (1-f->alpha) * error;
+    f->angle = wrap_pi(f->angle);
 
     return f->angle;
 }
@@ -150,10 +156,19 @@ static float PID_Update(PID_t *pid, float setpoint, float measurement, float dt)
     return output;
 }
 
+ /* =========================================================
+  *                    PID INTEGRATOR RESET
+  * ========================================================= */
+
+static void PID_Reset(PID_t *pid)
+{
+    pid->integrator = 0.0f;
+    pid->prev_error = 0.0f;
+}
 /* =========================================================
  *                LOW-PASS FILTER INITIALIZATION
  * ========================================================= */
-void LPF_FirstOrder_Init(FirstOrderLPF_t *f, float cutoff_freq, float dt)
+static void LPF_FirstOrder_Init(FirstOrderLPF_t *f, float cutoff_freq, float dt)
 {
     float RC = 1.0f / (2.0f * M_PI * cutoff_freq);
     f->cutoff_freq = cutoff_freq;
@@ -162,13 +177,13 @@ void LPF_FirstOrder_Init(FirstOrderLPF_t *f, float cutoff_freq, float dt)
     f->d1 = 0.0f;
 }
 
-float LPF_FirstOrder_Update(FirstOrderLPF_t *f, float input)
+static float LPF_FirstOrder_Update(FirstOrderLPF_t *f, float input)
 {
     f->d1 += f->alpha * (input - f->d1);
     return f->d1;
 }
 
-void LPF_SecondOrder_Init(SecondOrderLPF_t *f, float cutoff_freq, float dt)
+static void LPF_SecondOrder_Init(SecondOrderLPF_t *f, float cutoff_freq, float dt)
 {
     float K = tanf(M_PI * cutoff_freq * dt);
     float norm = 1.0f / (1.0f + sqrtf(2.0f) * K + K*K);
@@ -184,7 +199,7 @@ void LPF_SecondOrder_Init(SecondOrderLPF_t *f, float cutoff_freq, float dt)
     f->d2 = 0;
 }
 
-float LPF_SecondOrder_Update(SecondOrderLPF_t *f, float input)
+static float LPF_SecondOrder_Update(SecondOrderLPF_t *f, float input)
 {
     float output = f->b0 * input + f->d1 ;
 
@@ -193,9 +208,6 @@ float LPF_SecondOrder_Update(SecondOrderLPF_t *f, float input)
 
     return output;
 }
-
-
-
 
 
 /* =========================================================
@@ -220,11 +232,11 @@ void Controller_Init(ControlSystem_t *sys)
     const float accele_dt  = 1.0f/200.0f;    // 200 Hz 
     const float mag_dt     = 1.0f/25.0f;     // 25 Hz 
     const float baro_dt    = 1.0f/50.0f;     // 50 Hz
-    const float alpha = 0.98f; 
+    const float alpha = 0.96f; 
 
-    CF_Init(&est->roll,  alpha, gyro_dt);
-    CF_Init(&est->pitch, alpha, gyro_dt);
-    CF_Init(&est->yaw,   alpha, gyro_dt);
+    CF_Init(&est->phi,  alpha, gyro_dt);
+    CF_Init(&est->theta, alpha, gyro_dt);
+    CF_Init(&est->psi,   alpha, gyro_dt);
 
     LPF_FirstOrder_Init(&sys->accel_lpf.ax, 50.0f, accele_dt);
     LPF_FirstOrder_Init(&sys->accel_lpf.ay, 50.0f, accele_dt);
@@ -238,20 +250,25 @@ void Controller_Init(ControlSystem_t *sys)
     LPF_FirstOrder_Init(&sys->mag_lpf.my, 10.0f, mag_dt);
     LPF_FirstOrder_Init(&sys->mag_lpf.mz, 10.0f, mag_dt);
 
-    LPF_FirstOrder_Init(&sys->sensor.baro, 25.0f, baro_dt);
+    LPF_FirstOrder_Init(&sys->baro_lpf, 25.0f, baro_dt);
+
+    Read_Magnetic_Blocking(&sys->sensor.imu);
+    sys->estimator.psi.angle = -atan2f(sys->sensor.imu.my, sys->sensor.imu.mx);
+    sys->state.euler.z = sys->estimator.psi.angle;
+
     /* =====================================================
      * 2. ANGLE CONTROLLER (Outer Loop)
      * ===================================================== */
-    PID_Init(&actrl->roll,  1.0f, 0.5f, 0.1f,  -30.0f, 30.0f);
-    PID_Init(&actrl->pitch, 4.0f, 0.5f, 0.1f,  -30.0f, 30.0f);
-    PID_Init(&actrl->yaw,   2.0f, 0.3f, 0.05f, -30.0f, 30.0f);
+    PID_Init(&actrl->roll,  ROLL_KP, ROLL_KI, ROLL_KD,  -30.0f, 30.0f);
+    PID_Init(&actrl->pitch, PITCH_KP, PITCH_KI, PITCH_KD,  -30.0f, 30.0f);
+    PID_Init(&actrl->yaw,   YAW_KP, YAW_KI, YAW_KD, -30.0f, 30.0f);
 
     /* =====================================================
      * 3. RATE CONTROLLER (Inner Loop)
      * ===================================================== */
-    PID_Init(&rctrl->p, 0.1f,  0.00f,  0.000f,  -10.0f, 10.0f);
-    PID_Init(&rctrl->q, 0.1f,  0.00f,  0.000f,  -10.0f, 10.0f);
-    PID_Init(&rctrl->r, 0.01f, 0.000f, 0.000f, -10.0f, 10.0f);
+    PID_Init(&rctrl->p, P_KP,  P_KI,  P_KD,  -10.0f, 10.0f);
+    PID_Init(&rctrl->q, Q_KP,  Q_KI,  Q_KD,  -10.0f, 10.0f);
+    PID_Init(&rctrl->r, R_KP,  R_KI, R_KD, -10.0f, 10.0f);
 
     /* =====================================================
      * 4. INERTIA MODEL (Physical parameters)
@@ -309,156 +326,87 @@ void Controller_Init(ControlSystem_t *sys)
     sig->u_esc.w_br = 0.0f;
 }
 
-void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator)
+void Rate_PID_Reset(RateController_t *rctrl)
 {
-    /* =====================================================
-     * 0. ROLL & PITCH 
-     * ===================================================== */
-    float ax = state->accel_body.x;
-    float ay = state->accel_body.y;
-    float az = state->accel_body.z;
-
-    float gx = state->omega_body.x;
-    float gy = state->omega_body.y;
-    float gz = state->omega_body.z;
-
-    float mx = state->mag.x;
-    float my = state->mag.y;
-    float mz = state->mag.z;
-
-    float dt = estimator->roll.dt;
-
-    float acc_roll  = atan2f(ay, az);
-    float acc_pitch = atan2f(-ax, sqrtf(ay*ay + az*az));
-
-    float roll  = CF_Update(&estimator->roll,  gx, acc_roll);
-    float pitch = CF_Update(&estimator->pitch, gy, acc_pitch);
-
-    state->euler.x = roll;   
-    state->euler.y = pitch;  
-    /* =====================================================
-     * 1. YAW 
-     * ===================================================== */
-
-    float phi   = roll;
-    float theta = pitch;
-
-    float ctheta = cosf(theta);
-    if (fabsf(ctheta) < 0.01f)
-        ctheta = 0.01f;
-
-    // gyro already rad/s
-    float q = gy;
-    float r = gz;
-
-    float psi_dot = (q * sinf(phi) + r * cosf(phi)) / ctheta;
-
-    float yaw_gyro = estimator->yaw.angle + psi_dot * dt;
-    yaw_gyro = wrap_pi(yaw_gyro);
-
-
-    float mx_h = mx * cosf(theta) + mz * sinf(theta);
-
-    float my_h = mx * sinf(phi) * sinf(theta)
-               + my * cosf(phi)
-               - mz * sinf(phi) * cosf(theta);
-
-    float yaw_mag = -atan2f(my_h, mx_h);
-
-    float error = wrap_pi(yaw_mag - yaw_gyro);
-
-    float yaw = yaw_gyro +
-                (1.0f - estimator->yaw.alpha) * error;
-
-    yaw = wrap_pi(yaw);
-
-    estimator->yaw.angle = yaw;
-    state->euler.z = yaw;   // rad
+    PID_Reset(&rctrl->p);
+    PID_Reset(&rctrl->q);
+    PID_Reset(&rctrl->r);
 }
-void Estimator_Update(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator)
+
+void Angle_PID_Reset(AngleController_t *actrl)
+{
+    PID_Reset(&actrl->roll);
+    PID_Reset(&actrl->pitch);
+    PID_Reset(&actrl->yaw);
+}
+
+void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator,uint8_t TYPE)
 {
     /* =====================================================
-     * 1. RAW SENSOR  (ALL RAD)
+     * 0. ROLL & PITCH FROM GYRO
      * ===================================================== */
+    if (TYPE == GYRO_ANGLE)
+    {
+        float p = state->omega_body.x;
+        float q = state->omega_body.y;
+        float r = state->omega_body.z;
 
-    float ax = sensor->imu.ax;
-    float ay = sensor->imu.ay;
-    float az = sensor->imu.az;
+        float phi   = state->euler.x;
+        float theta = state->euler.y;
 
-    float gx = sensor->imu.gx;
-    float gy = sensor->imu.gy;
-    float gz = sensor->imu.gz;
+        float phi_dot   = p + q*sinf(phi)*tanf(theta) + r*cosf(phi)*tanf(theta);
+        float theta_dot = q*cosf(phi) - r*sinf(phi);
+        float psi_dot   = (q*sinf(phi) + r*cosf(phi)) / cosf(theta);
 
-    float mx = sensor->imu.mx;
-    float my = sensor->imu.my;
-    float mz = sensor->imu.mz;
+        state->euler.x = CF_Predict(&estimator->phi, phi_dot);
+        state->euler.y = CF_Predict(&estimator->theta, theta_dot);
+        state->euler.z = wrap_pi(CF_Predict(&estimator->psi, psi_dot));
 
-    float dt = estimator->roll.dt;
+        return;
+    }
+    
+    else if (TYPE == ACCEL_ANGLE)
+    {
+        float ax = state->accel_body.x;
+        float ay = state->accel_body.y;
+        float az = state->accel_body.z;
+
+        float phi  = CF_Correct(&estimator->phi, atan2f(ay, az));
+        float theta = CF_Correct(&estimator->theta, atan2f(-ax, sqrtf(ay*ay + az*az)));
+
+        state->euler.x = phi;   
+        state->euler.y = theta;  
+        return;
+    }
+    else if (TYPE == MAG_ANGLE)
+    {
+        float mx = state->mag.x;
+        float my = state->mag.y;
+        float mz = state->mag.z;
+
+        float phi  = state->euler.x;
+        float theta = state->euler.y;
+
+        float mx_h = mx * cosf(theta) + mz * sinf(theta);
+        float my_h = mx * sinf(phi) * sinf(theta)
+                    + my * cosf(phi)
+                    - mz * sinf(phi) * cosf(theta);
+
+        float psi_mag = -atan2f(my_h, mx_h);
+
+        state->euler.z = CF_Correct(&estimator->psi, psi_mag);
+    }
+
+}
+void Convert_BodyToWorld(DroneState_t *state)
+{
     /* =====================================================
-     * 2. ROLL & PITCH 
+     * 1. ROTATION MATRIX (Body → World)
      * ===================================================== */
 
-    float acc_roll  = atan2f(ay, az);
-    float acc_pitch = atan2f(-ax, sqrtf(ay*ay + az*az));
-
-    float roll  = CF_Update(&estimator->roll,  gx, acc_roll);
-    float pitch = CF_Update(&estimator->pitch, gy, acc_pitch);
-
-    state->euler.x = roll;   
-    state->euler.y = pitch;  
-
-    /* =====================================================
-     * 3. YAW 
-     * ===================================================== */
-
-    float phi   = roll;
-    float theta = pitch;
-
-    float ctheta = cosf(theta);
-    if (fabsf(ctheta) < 0.01f)
-        ctheta = 0.01f;
-
-    // gyro already rad/s
-    float q = gy;
-    float r = gz;
-
-    float psi_dot = (q * sinf(phi) + r * cosf(phi)) / ctheta;
-
-    float yaw_gyro = estimator->yaw.angle + psi_dot * dt;
-    yaw_gyro = wrap_pi(yaw_gyro);
-
-
-    float mx_h = mx * cosf(theta) + mz * sinf(theta);
-
-    float my_h = mx * sinf(phi) * sinf(theta)
-               + my * cosf(phi)
-               - mz * sinf(phi) * cosf(theta);
-
-    float yaw_mag = -atan2f(my_h, mx_h);
-
-    float error = wrap_pi(yaw_mag - yaw_gyro);
-
-    float yaw = yaw_gyro +
-                (1.0f - estimator->yaw.alpha) * error;
-
-    yaw = wrap_pi(yaw);
-
-    estimator->yaw.angle = yaw;
-    state->euler.z = yaw;   // rad
-
-    /* =====================================================
-     * 4. BODY RATES (RAD/S)
-     * ===================================================== */
-
-    state->omega_body.x = gx;
-    state->omega_body.y = gy;
-    state->omega_body.z = gz;
-
-    /* =====================================================
-     * 5. ROTATION MATRIX (Body → World)
-     * ===================================================== */
-
-    float gamma = yaw;  // NO CONVERSION
+    float phi   = state->euler.x;
+    float theta = state->euler.y;
+    float gamma = state->euler.z;
 
     float cphi = cosf(phi);
     float sphi = sinf(phi);
@@ -470,54 +418,38 @@ void Estimator_Update(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimat
 
     float R[9];
 
-    R[0] = ctheta * cgamma;
+    R[0] = cosf(theta) * cosf(gamma);
     R[1] = sphi * stheta * cgamma - cphi * sgamma;
     R[2] = cphi * stheta * cgamma + sphi * sgamma;
 
-    R[3] = ctheta * sgamma;
+    R[3] = cosf(theta) * sgamma;
     R[4] = sphi * stheta * sgamma + cphi * cgamma;
     R[5] = cphi * stheta * sgamma - sphi * cgamma;
 
     R[6] = -stheta;
-    R[7] = sphi * ctheta;
-    R[8] = cphi * ctheta;
+    R[7] = sphi * cosf(theta);
+    R[8] = cphi * cosf(theta);
 
     /* =====================================================
-     * 6. WORLD ACCELERATION
+     * 2. WORLD ACCELERATION
      * ===================================================== */
+
+    float ax = state->accel_body.x;
+    float ay = state->accel_body.y;
+    float az = state->accel_body.z;
 
     float ax_w = R[0]*ax + R[1]*ay + R[2]*az;
     float ay_w = R[3]*ax + R[4]*ay + R[5]*az;
     float az_w = R[6]*ax + R[7]*ay + R[8]*az;
 
     // NED frame (+Z down)
-    az_w -= GRAVITY;  // GRAVITY COMPENSATION
+    /* gravity compensation: use estimated gravity in state when available */
+    float g_comp = (state->gravity_est > 0.1f) ? state->gravity_est : GRAVITY;
+    az_w -= g_comp;  // GRAVITY COMPENSATION
 
     state->accel_world.x = ax_w;
     state->accel_world.y = ay_w;
     state->accel_world.z = az_w;
-
-    /* =====================================================
-     * 7. WORLD ANGULAR RATES (RAD/S)
-     * ===================================================== */
-
-    float ttheta = tanf(theta);
-
-    state->omega_world.x =
-        gx + gy * sinf(phi) * ttheta
-           + gz * cosf(phi) * ttheta;
-
-    state->omega_world.y =
-        gy * cosf(phi) - gz * sinf(phi);
-
-    state->omega_world.z =
-        psi_dot;   // RAD/S
-
-    /* =====================================================
-     * 8. ALTITUDE
-     * ===================================================== */
-
-    state->position.z = sensor->distance;
 }
 
 void Gyro_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator,GyroLPF_t *gyro_lpf)
@@ -540,8 +472,7 @@ void Gyro_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *es
     state->omega_body.x = gx_f;
     state->omega_body.y = gy_f;
     state->omega_body.z = gz_f;
-
-    }
+}
 
 void Accel_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, AccelLPF_t *accel_lpf)
 {
@@ -563,7 +494,10 @@ void Accel_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *e
     state->accel_body.y = ay;
     state->accel_body.z = az;
 
-    }
+    /* propagate calibrated gravity estimate from sensor into state */
+    state->gravity_est = (sensor->imu.g_est > 0.1f) ? sensor->imu.g_est : GRAVITY;
+
+}
 
 void Mag_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, MagLPF_t *mag_lpf)
 {
@@ -586,17 +520,12 @@ void Mag_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *est
     state->mag.y = my;
     state->mag.z = mz;
 }
-
-
-
-
-
-
-
-
-
-
-
+void Barometer_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, FirstOrderLPF_t *baro_lpf)
+{
+    float alt_raw = sensor->baro.pressure;
+    float alt_f = LPF_FirstOrder_Update(baro_lpf, alt_raw);
+    state->baro_altitude = alt_f;
+}
 
 void Motor_Mixer(Torque_t *torque_total,
                  float thrust_sp,

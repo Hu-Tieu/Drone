@@ -121,6 +121,7 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE BEGIN 2 */
   /* receiver and rpm_last_capture are now module-level globals */
   IMU_Init();
+  Calib_Accel(&sys.sensor.imu);
   PWM_Init();
   if (tof_enabled)
   {

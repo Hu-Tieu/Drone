@@ -397,7 +397,7 @@ static void buildTestFrame(TelemetryFrame96_t *frame, uint16_t seq)
     frame->p2.accel_world_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.y : 0.0f, 100.0f);
     frame->p2.accel_world_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.z : 0.0f, 100.0f);
     frame->p2.w_fr = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.motor_desired.w_fr : 0.0f, 1.0f);
-    frame->p2.baro_pressure = g_rf24_sys ? g_rf24_sys->sensor.baro.pressure : 0.0f;
+    frame->p2.baro_pressure = g_rf24_sys ? g_rf24_sys->state.baro_altitude : 0.0f;
     frame->p2.reserved = (uint8_t)(g_last_pid_seq16 & 0xFFu);
 
     frame->p3.id = 3;
