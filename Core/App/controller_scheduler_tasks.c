@@ -78,11 +78,6 @@ static void handle_gyro_update_pipeline(SchedulerContext_t *ctx) {
             ESC_Output(&sys->signals.u_esc);
         }
         
-        if (cfg->enable_motor_output)
-        {
-            ESC_Output(&sys->signals.u_esc);
-        }
-        
 
         NRF24_Send();
         

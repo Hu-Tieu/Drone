@@ -463,9 +463,9 @@ static void imu_apply_gyro(IMU_Data_t *imu, const uint8_t *data)
     int16_t gy = (int16_t)(data[2] | (data[3] << 8));
     int16_t gz = (int16_t)(data[4] | (data[5] << 8));
 
-    imu->gy = gx * 3.8e-3f * M_PI / 180.0f;
-    imu->gx = gy * 3.8e-3f * M_PI / 180.0f;
-    imu->gz = -gz * 3.8e-3f * M_PI / 180.0f;
+    imu->gy = gx * 0.00381469726f * M_PI / 180.0f;
+    imu->gx = gy * 0.00381469726f * M_PI / 180.0f;
+    imu->gz = -gz * 0.00381469726f * M_PI / 180.0f;
 }
 
 static void imu_apply_accel(IMU_Data_t *imu_data, const uint8_t *data)
@@ -474,9 +474,9 @@ static void imu_apply_accel(IMU_Data_t *imu_data, const uint8_t *data)
     int16_t ay = (int16_t)(data[2] | (data[3] << 8));
     int16_t az = (int16_t)(data[4] | (data[5] << 8));
 
-    imu_data->ay = -ax * 6.1e-5f * 9.807f;
-    imu_data->ax = -ay * 6.1e-5f * 9.807f;
-    imu_data->az = az * 6.1e-5f * 9.807f;
+    imu_data->ay = -ax * 0.00006103515f * 9.807f;
+    imu_data->ax = -ay * 0.00006103515f * 9.807f;
+    imu_data->az = az * 0.00006103515f * 9.807f;
 }
 
 static void imu_apply_magnetic(IMU_Data_t *imu_data, const uint8_t *data)
