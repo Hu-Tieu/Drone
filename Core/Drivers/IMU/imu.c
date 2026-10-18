@@ -307,7 +307,7 @@ void bmp388_init(void) {
     HAL_I2C_Mem_Write(hi2c3_IMU, BMP388_ADDRESS, BMP388_REG_CONFIG,
             I2C_MEMADD_SIZE_8BIT, &cmd, 1, HAL_MAX_DELAY);
     HAL_Delay(2);
-    uint8_t data[30];
+    uint8_t data[30] = {0};
     // 5. Read calibration data (21 bytes)
     HAL_I2C_Mem_Read(hi2c3_IMU, BMP388_ADDRESS, BMP388_REG_CALIB_DATA,
             I2C_MEMADD_SIZE_8BIT, &data[0], 21, HAL_MAX_DELAY);
@@ -603,6 +603,75 @@ void IMU_Init(void) {
     bmx160_init();
     bmp388_init();
 }
+
+HAL_StatusTypeDef IMU_Reinitialize(IMU_Data_t *imu_data)
+{
+    uint8_t device_id = 0U;
+    HAL_StatusTypeDef status;
+
+    if (imu_data == NULL)
+        return HAL_ERROR;
+
+    if (g_imu_dma_req != IMU_DMA_REQ_NONE)
+    {
+        if ((hi2c3_IMU->hdmarx != NULL) &&
+            (HAL_DMA_GetState(hi2c3_IMU->hdmarx) != HAL_DMA_STATE_READY))
+        {
+            HAL_StatusTypeDef status = HAL_DMA_Abort(hi2c3_IMU->hdmarx);
+            if (status != HAL_OK)
+                return status;
+        }
+
+        HAL_StatusTypeDef status = HAL_I2C_DeInit(hi2c3_IMU);
+        if (status != HAL_OK)
+            return status;
+    }
+
+    g_imu_dma_req = IMU_DMA_REQ_NONE;
+    g_imu_dma_target = NULL;
+    g_baro_dma_target = NULL;
+    g_gyro_frame_target = NULL;
+    g_gyro_frame_active = 0U;
+    g_gyro_frame_mode = 0U;
+    memset(g_imu_dma_gyro_buf, 0, sizeof(g_imu_dma_gyro_buf));
+    memset(g_imu_dma_accel_buf, 0, sizeof(g_imu_dma_accel_buf));
+    memset(g_imu_dma_mag_buf, 0, sizeof(g_imu_dma_mag_buf));
+    memset(g_imu_dma_frame_buf, 0, sizeof(g_imu_dma_frame_buf));
+    memset(g_baro_dma_buf, 0, sizeof(g_baro_dma_buf));
+    memset(&g_bmx160, 0, sizeof(g_bmx160));
+    memset(&g_bmp388, 0, sizeof(g_bmp388));
+    memset(imu_data, 0, sizeof(*imu_data));
+
+    IMU_Init();
+
+    status = HAL_I2C_Mem_Read(hi2c3_IMU,
+                              BMX160_ADDRESS,
+                              BMX160_REG_CHIP_ID,
+                              I2C_MEMADD_SIZE_8BIT,
+                              &device_id,
+                              1U,
+                              100U);
+    if (status != HAL_OK)
+        return status;
+    if (device_id != 0xD8U)
+        return HAL_ERROR;
+
+    status = HAL_I2C_Mem_Read(hi2c3_IMU,
+                              BMP388_ADDRESS,
+                              BMP388_REG_CHIP_ID,
+                              I2C_MEMADD_SIZE_8BIT,
+                              &device_id,
+                              1U,
+                              100U);
+    if (status != HAL_OK)
+        return status;
+    if (device_id != 0x50U)
+        return HAL_ERROR;
+
+    Calib_Accel(imu_data);
+    return HAL_OK;
+}
+
 void Calib_Accel(IMU_Data_t *imu)
 {
     uint8_t buf[BMX160_ACCEL_LEN];
@@ -797,6 +866,7 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
             {
                 /* Single gyro-only transaction */
                 imu_apply_gyro(imu_target, g_imu_dma_gyro_buf);
+                imu_finish_gyro_frame();
             }
         }
     }

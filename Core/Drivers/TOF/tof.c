@@ -6,6 +6,7 @@
  */
 #include "tof.h"
 #include "custom_ranging_sensor.h"
+#include <string.h>
 
 long tof_last_distance_mm = 0;
 volatile uint8_t tof_enabled = 0U;
@@ -67,6 +68,19 @@ int32_t TOF_Init(void) {
     
     ret = CUSTOM_RANGING_SENSOR_Start(CUSTOM_VL53L3CX, RS_MODE_ASYNC_CONTINUOUS);
     return ret;
+}
+
+int32_t TOF_Reinitialize(void)
+{
+    int32_t ret;
+
+    ret = CUSTOM_RANGING_SENSOR_Stop(CUSTOM_VL53L3CX);
+    if (ret != BSP_ERROR_NONE)
+        return ret;
+
+    tof_last_distance_mm = 0;
+    memset(&Result, 0, sizeof(Result));
+    return TOF_Init();
 }
 
 void TOF_distance(long *distance)

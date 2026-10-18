@@ -57,6 +57,8 @@ typedef uint32_t system_flag_t;
 #define FLAG_RECEIVER_IBUS      (1U << 12)
 /* Request a new gyro DMA frame (gyro + optional accel/mag). */
 #define FLAG_GYRO_READ_REQ      (1U << 13)
+/* Request a sensor/controller reset from the user button. */
+#define FLAG_SENSOR_RESET       (1U << 14)
 typedef struct
 {
     system_flag_t system;
@@ -78,6 +80,7 @@ extern volatile uint32_t g_phase_lower_us;
 
 /* Set a scheduler flag from ISR/callback context. */
 void Scheduler_SetFlagFromISR(system_flag_t flag);
+void Scheduler_RequestSensorReset(void);
 
 
 #endif

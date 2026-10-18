@@ -1,7 +1,12 @@
 #include "controller_main.h"
 #include "PWM/PWM.h"
 #include "controller_scheduler.h"
+#include "controller_scheduler_tasks.h"
 #include "stdio.h"
+
+#define RESET_CALIB_SAMPLES 100U
+#define PID_DERIVATIVE_CUTOFF_HZ 30.0f
+#define PID_DERIVATIVE_OUTPUT_LIMIT_FRACTION 0.25f
 static inline float clamp(float duty)
 {
     return (duty < 0.0f) ? 0.0f : (duty > 1.0f) ? 1.0f : duty;
@@ -36,23 +41,48 @@ static inline float safe_divf(float num, float den, float den_min)
     return num / den;
 }
 void ESC_Force(MotorCommand_t *u_esc) {
-    u_esc->w_fl = 0.0f;
-    u_esc->w_fr = 0.0f;
-    u_esc->w_bl = 0.0f;
-    u_esc->w_br = 0.0f;
+    u_esc->fl = 0.0f;
+    u_esc->fr = 0.0f;
+    u_esc->bl = 0.0f;
+    u_esc->br = 0.0f;
 }
 
 /* =========================================================
  *                Convert
  * ========================================================= */
-void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals) {
-
-    /* Use calibrated gravity estimate if available, otherwise fallback */
+void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals, SystemMode_t mode) {
     float g = (sensor->imu.g_est > 0.1f) ? sensor->imu.g_est : GRAVITY;
-    signals->thrust_sp = sensor->ibus.channel[2] * (DRONE_MASS * g) * 1.5f;  
-    signals->rate_sp.p = (sensor->ibus.channel[0]-0.5f) * 2 * M_PI/2;   // Roll rate setpoint (rad/s)
-    signals->rate_sp.q = (sensor->ibus.channel[1]-0.5f) * 2 * M_PI/2;   // Pitch rate setpoint (rad/s)
-    signals->rate_sp.r = (sensor->ibus.channel[3]-0.5f) * 2 * M_PI/2;   // Yaw rate setpoint (rad/s)
+
+    if (mode == SYSTEM_MODE_TEST) {
+        float raw_thrust = sensor->ibus.channel[2];
+        signals->thrust_sp = 0.0f;
+        signals->angle_sp.roll = 0.0f;
+        signals->angle_sp.pitch = 0.0f;
+        signals->angle_sp.yaw = 0.0f;
+        signals->rate_sp.p = 0.0f;
+        signals->rate_sp.q = 0.0f;
+        signals->rate_sp.r = 0.0f;
+        Torque_PID_Reset(&signals->torque_pid);
+        signals->u_esc.fl = raw_thrust;
+        signals->u_esc.fr = raw_thrust;
+        signals->u_esc.bl = raw_thrust;
+        signals->u_esc.br = raw_thrust;
+        return;
+    }
+
+    if (mode == SYSTEM_MODE_SAFETY) {
+        signals->thrust_sp = 0.0f;
+        signals->rate_sp.p = 0.0f;
+        signals->rate_sp.q = 0.0f;
+        signals->rate_sp.r = 0.0f;
+    }
+    if (mode == SYSTEM_MODE_IDLE ||
+        mode == SYSTEM_MODE_FLIGHT) {
+        signals->thrust_sp = sensor->ibus.channel[2] * (DRONE_MASS * g) * 2.0f;
+        signals->angle_sp.roll = (sensor->ibus.channel[0]-0.5f) * M_PI/4;   // Roll angle setpoint (rad)
+        signals->angle_sp.pitch = -(sensor->ibus.channel[1]-0.5f) * M_PI/4;   // Pitch angle setpoint (rad)
+        signals->rate_sp.r = (sensor->ibus.channel[3]-0.5f) * 2 * M_PI/2;   // Yaw angle setpoint (rad)
+    }
 
 }
 
@@ -91,6 +121,9 @@ static void PID_Init(PID_t *pid, float kp, float ki, float kd,
 
     pid->integrator = 0.0f;
     pid->prev_error = 0.0f;
+    pid->prev_measurement = 0.0f;
+    pid->filtered_derivative = 0.0f;
+    pid->derivative_initialized = 0U;
 
     pid->out_min = out_min;
     pid->out_max = out_max;
@@ -99,7 +132,8 @@ static void PID_Init(PID_t *pid, float kp, float ki, float kd,
 /* =========================================================
  *                    PID UPDATE
  * ========================================================= */
-static float PID_Update(PID_t *pid, float setpoint, float measurement, float dt)
+static float PID_Update(PID_t *pid, float setpoint, float measurement, float dt,
+                        uint8_t wrap_measurement)
 {
     /* =============================
      * 1. Error
@@ -118,11 +152,31 @@ static float PID_Update(PID_t *pid, float setpoint, float measurement, float dt)
 
     float I = pid->ki * pid->integrator;
 
-    /* =============================
-     * 4. Derivative
-     * ============================= */
-    float derivative = (error - pid->prev_error) / dt;
-    float D = pid->kd * derivative;
+    /* Derivative on measurement avoids a kick when the setpoint changes. */
+    if (pid->derivative_initialized == 0U)
+    {
+        pid->prev_measurement = measurement;
+        pid->filtered_derivative = 0.0f;
+        pid->derivative_initialized = 1U;
+    }
+    else
+    {
+        float measurement_delta = measurement - pid->prev_measurement;
+        if (wrap_measurement != 0U)
+            measurement_delta = wrap_pi(measurement_delta);
+
+        const float derivative = -measurement_delta / dt;
+        const float tau = 1.0f / (2.0f * M_PI * PID_DERIVATIVE_CUTOFF_HZ);
+        const float alpha = dt / (tau + dt);
+
+        pid->prev_measurement = measurement;
+        pid->filtered_derivative += alpha * (derivative - pid->filtered_derivative);
+    }
+
+    float D = pid->kd * pid->filtered_derivative;
+    const float d_limit = fminf(fabsf(pid->out_min), fabsf(pid->out_max)) *
+                          PID_DERIVATIVE_OUTPUT_LIMIT_FRACTION;
+    D = clampf(D, -d_limit, d_limit);
 
     /* =============================
      * 5. Raw output
@@ -164,6 +218,9 @@ static void PID_Reset(PID_t *pid)
 {
     pid->integrator = 0.0f;
     pid->prev_error = 0.0f;
+    pid->prev_measurement = 0.0f;
+    pid->filtered_derivative = 0.0f;
+    pid->derivative_initialized = 0U;
 }
 /* =========================================================
  *                LOW-PASS FILTER INITIALIZATION
@@ -232,7 +289,7 @@ void Controller_Init(ControlSystem_t *sys)
     const float accele_dt  = 1.0f/200.0f;    // 200 Hz 
     const float mag_dt     = 1.0f/25.0f;     // 25 Hz 
     const float baro_dt    = 1.0f/50.0f;     // 50 Hz
-    const float alpha = 0.96f; 
+    const float alpha = 0.98f; 
 
     CF_Init(&est->phi,  alpha, gyro_dt);
     CF_Init(&est->theta, alpha, gyro_dt);
@@ -250,7 +307,7 @@ void Controller_Init(ControlSystem_t *sys)
     LPF_FirstOrder_Init(&sys->mag_lpf.my, 10.0f, mag_dt);
     LPF_FirstOrder_Init(&sys->mag_lpf.mz, 10.0f, mag_dt);
 
-    LPF_FirstOrder_Init(&sys->baro_lpf, 25.0f, baro_dt);
+    LPF_FirstOrder_Init(&sys->baro_lpf, 10.0f, baro_dt);
 
     Read_Magnetic_Blocking(&sys->sensor.imu);
     sys->estimator.psi.angle = -atan2f(sys->sensor.imu.my, sys->sensor.imu.mx);
@@ -315,15 +372,34 @@ void Controller_Init(ControlSystem_t *sys)
     sig->thrust_sp = 0.0f;
 
     /* --- Motor commands --- */
-    sig->motor_desired.w_fl = 0.0f;
-    sig->motor_desired.w_fr = 0.0f;
-    sig->motor_desired.w_bl = 0.0f;
-    sig->motor_desired.w_br = 0.0f;
+    sig->motor_desired.fl = 0.0f;
+    sig->motor_desired.fr = 0.0f;
+    sig->motor_desired.bl = 0.0f;
+    sig->motor_desired.br = 0.0f;
 
-    sig->u_esc.w_fl = 0.0f;
-    sig->u_esc.w_fr = 0.0f;
-    sig->u_esc.w_bl = 0.0f;
-    sig->u_esc.w_br = 0.0f;
+    sig->u_esc.fl = 0.0f;
+    sig->u_esc.fr = 0.0f;
+    sig->u_esc.bl = 0.0f;
+    sig->u_esc.br = 0.0f;
+
+    /* --- Reset/Calibration state --- */
+    sys->state.euler_offset.x = 0.0f;
+    sys->state.euler_offset.y = 0.0f;
+    sys->state.euler_offset.z = 0.0f;
+
+    sys->state.rate_offset.x = 0.0f;
+    sys->state.rate_offset.y = 0.0f;
+    sys->state.rate_offset.z = 0.0f;
+
+    sys->reset_calib.angle_active = 0U;
+    sys->reset_calib.rate_active = 0U;
+    sys->reset_calib.angle_count = 0U;
+    sys->reset_calib.rate_count = 0U;
+    sys->reset_calib.angle_sum_x = 0.0f;
+    sys->reset_calib.angle_sum_y = 0.0f;
+    sys->reset_calib.rate_sum_p = 0.0f;
+    sys->reset_calib.rate_sum_q = 0.0f;
+    sys->reset_calib.rate_sum_r = 0.0f;
 }
 
 void Rate_PID_Reset(RateController_t *rctrl)
@@ -333,11 +409,124 @@ void Rate_PID_Reset(RateController_t *rctrl)
     PID_Reset(&rctrl->r);
 }
 
+/* =========================================================
+ *              TORQUE RESET (Output Reset)
+ * ========================================================= */
+void Torque_PID_Reset(Torque_t *torque_pid)
+{
+    torque_pid->tau_x = 0.0f;
+    torque_pid->tau_y = 0.0f;
+    torque_pid->tau_z = 0.0f;
+}
+
 void Angle_PID_Reset(AngleController_t *actrl)
 {
     PID_Reset(&actrl->roll);
     PID_Reset(&actrl->pitch);
     PID_Reset(&actrl->yaw);
+}
+
+void Controller_RequestAngleReset(ControlSystem_t *sys)
+{
+    if (sys == NULL)
+    {
+        return;
+    }
+
+    /* Ignore duplicate reset requests while sampling is in progress. */
+    if (sys->reset_calib.angle_active)
+    {
+        return;
+    }
+
+    sys->reset_calib.angle_active = 1U;
+    sys->reset_calib.angle_count = 0U;
+    sys->reset_calib.angle_sum_x = 0.0f;
+    sys->reset_calib.angle_sum_y = 0.0f;
+
+    /* Start calibration processing immediately; the scheduler will keep
+     * feeding samples on subsequent gyro updates. */
+    Controller_ProcessResetCalibration(sys);
+}
+
+void Controller_RequestRateReset(ControlSystem_t *sys)
+{
+    if (sys == NULL)
+    {
+        return;
+    }
+
+    /* Ignore duplicate reset requests while sampling is in progress. */
+    if (sys->reset_calib.rate_active)
+    {
+        return;
+    }
+
+    sys->reset_calib.rate_active = 1U;
+    sys->reset_calib.rate_count = 0U;
+    sys->reset_calib.rate_sum_p = 0.0f;
+    sys->reset_calib.rate_sum_q = 0.0f;
+    sys->reset_calib.rate_sum_r = 0.0f;
+
+    /* Start calibration processing immediately; the scheduler will keep
+     * feeding samples on subsequent gyro updates. */
+    Controller_ProcessResetCalibration(sys);
+}
+
+void Controller_ProcessResetCalibration(ControlSystem_t *sys)
+{
+    if (sys == NULL)
+    {
+        return;
+    }
+
+    if (sys->reset_calib.angle_active)
+    {
+        sys->reset_calib.angle_sum_x += sys->state.euler.x;
+        sys->reset_calib.angle_sum_y += sys->state.euler.y;
+        sys->reset_calib.angle_count++;
+
+        if (sys->reset_calib.angle_count >= RESET_CALIB_SAMPLES)
+        {
+            float avg_x = sys->reset_calib.angle_sum_x / (float)RESET_CALIB_SAMPLES;
+            float avg_y = sys->reset_calib.angle_sum_y / (float)RESET_CALIB_SAMPLES;
+
+            /* Incremental zeroing: keep old offset, remove current mean */
+            sys->state.euler_offset.x -= avg_x;
+            sys->state.euler_offset.y -= avg_y;
+
+            sys->reset_calib.angle_active = 0U;
+            sys->reset_calib.angle_count = 0U;
+            sys->reset_calib.angle_sum_x = 0.0f;
+            sys->reset_calib.angle_sum_y = 0.0f;
+        }
+    }
+
+    if (sys->reset_calib.rate_active)
+    {
+        sys->reset_calib.rate_sum_p += sys->state.omega_body.x;
+        sys->reset_calib.rate_sum_q += sys->state.omega_body.y;
+        sys->reset_calib.rate_sum_r += sys->state.omega_body.z;
+        sys->reset_calib.rate_count++;
+
+        if (sys->reset_calib.rate_count >= RESET_CALIB_SAMPLES)
+        {
+            float avg_p = sys->reset_calib.rate_sum_p / (float)RESET_CALIB_SAMPLES;
+            float avg_q = sys->reset_calib.rate_sum_q / (float)RESET_CALIB_SAMPLES;
+            float avg_r = sys->reset_calib.rate_sum_r / (float)RESET_CALIB_SAMPLES;
+
+            /* omega_body = gyro_filtered - rate_offset */
+            sys->state.rate_offset.x += avg_p;
+            sys->state.rate_offset.y += avg_q;
+            sys->state.rate_offset.z += avg_r;
+
+            sys->reset_calib.rate_active = 0U;
+            sys->reset_calib.rate_count = 0U;
+            sys->reset_calib.rate_sum_p = 0.0f;
+            sys->reset_calib.rate_sum_q = 0.0f;
+            sys->reset_calib.rate_sum_r = 0.0f;
+        }
+    }
 }
 
 void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator,uint8_t TYPE)
@@ -351,8 +540,10 @@ void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator,uint8_t
         float q = state->omega_body.y;
         float r = state->omega_body.z;
 
-        float phi   = state->euler.x;
-        float theta = state->euler.y;
+        /* Use raw estimator states here (before display/control offsets)
+         * to avoid feeding offset back into kinematic prediction. */
+        float phi   = estimator->phi.angle;
+        float theta = estimator->theta.angle;
 
         float phi_dot   = p + q*sinf(phi)*tanf(theta) + r*cosf(phi)*tanf(theta);
         float theta_dot = q*cosf(phi) - r*sinf(phi);
@@ -361,6 +552,9 @@ void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator,uint8_t
         state->euler.x = CF_Predict(&estimator->phi, phi_dot);
         state->euler.y = CF_Predict(&estimator->theta, theta_dot);
         state->euler.z = wrap_pi(CF_Predict(&estimator->psi, psi_dot));
+
+        state->euler.x = wrap_pi(state->euler.x + state->euler_offset.x);
+        state->euler.y = wrap_pi(state->euler.y + state->euler_offset.y);
 
         return;
     }
@@ -374,8 +568,8 @@ void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator,uint8_t
         float phi  = CF_Correct(&estimator->phi, atan2f(ay, az));
         float theta = CF_Correct(&estimator->theta, atan2f(-ax, sqrtf(ay*ay + az*az)));
 
-        state->euler.x = phi;   
-        state->euler.y = theta;  
+        state->euler.x = wrap_pi(phi + state->euler_offset.x);
+        state->euler.y = wrap_pi(theta + state->euler_offset.y);
         return;
     }
     else if (TYPE == MAG_ANGLE)
@@ -469,9 +663,9 @@ void Gyro_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *es
     float gy_f = LPF_SecondOrder_Update(&gyro_lpf->q, gy_raw);
     float gz_f = LPF_SecondOrder_Update(&gyro_lpf->r, gz_raw);
 
-    state->omega_body.x = gx_f;
-    state->omega_body.y = gy_f;
-    state->omega_body.z = gz_f;
+    state->omega_body.x = gx_f - state->rate_offset.x;
+    state->omega_body.y = gy_f - state->rate_offset.y;
+    state->omega_body.z = gz_f - state->rate_offset.z;
 }
 
 void Accel_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, AccelLPF_t *accel_lpf)
@@ -531,15 +725,15 @@ void Motor_Mixer(Torque_t *torque_total,
                  float thrust_sp,
                  MotorCommand_t *motor_desired)
 {
-    float constant = sqrtf(2.0f) * 0.25f * ARM_LENGTH * KF;
+    float arm_projection = ARM_LENGTH / sqrtf(2.0f);
 
     /* Base thrust → omega^2 */
     float T  = thrust_sp / (4.0f * KF);
 
     /* Torque → omega^2 contribution */
-    float Tx = torque_total->tau_x / constant;
-    float Ty = torque_total->tau_y / constant;
-    float Tz = torque_total->tau_z / KM;
+    float Tx = torque_total->tau_x / (4.0f * arm_projection * KF);
+    float Ty = torque_total->tau_y / (4.0f * arm_projection * KF);
+    float Tz = torque_total->tau_z / (4.0f * KM);
 
     /* Compute omega^2 */
     float w2_fl = T + Tx + Ty + Tz;
@@ -554,10 +748,10 @@ void Motor_Mixer(Torque_t *torque_total,
     float w_br = safe_sqrtf(w2_br);
 
     /* Saturation */
-    motor_desired->w_fl = clampf(w_fl, W_MIN, W_MAX);
-    motor_desired->w_fr = clampf(w_fr, W_MIN, W_MAX);
-    motor_desired->w_bl = clampf(w_bl, W_MIN, W_MAX);
-    motor_desired->w_br = clampf(w_br, W_MIN, W_MAX);
+    motor_desired->fl = clampf(w_fl, W_MIN, W_MAX);
+    motor_desired->fr = clampf(w_fr, W_MIN, W_MAX);
+    motor_desired->bl = clampf(w_bl, W_MIN, W_MAX);
+    motor_desired->br = clampf(w_br, W_MIN, W_MAX);
 }
 
 void Motor_Inverse_Model(MotorCommand_t *motor_desired,
@@ -566,23 +760,23 @@ void Motor_Inverse_Model(MotorCommand_t *motor_desired,
 {
 
 
-    float u_fl = (A_COEFF * motor_desired->w_fl * motor_desired->w_fl
-                 + B_COEFF * motor_desired->w_fl);
+    float u_fl = (A_COEFF * motor_desired->fl * motor_desired->fl
+                 + B_COEFF * motor_desired->fl);
 
-    float u_fr = (A_COEFF * motor_desired->w_fr * motor_desired->w_fr
-                 + B_COEFF * motor_desired->w_fr);
+    float u_fr = (A_COEFF * motor_desired->fr * motor_desired->fr
+                 + B_COEFF * motor_desired->fr);
 
-    float u_bl = (A_COEFF * motor_desired->w_bl * motor_desired->w_bl
-                 + B_COEFF * motor_desired->w_bl);
+    float u_bl = (A_COEFF * motor_desired->bl * motor_desired->bl
+                 + B_COEFF * motor_desired->bl);
 
-    float u_br = (A_COEFF * motor_desired->w_br * motor_desired->w_br
-                 + B_COEFF * motor_desired->w_br);
+    float u_br = (A_COEFF * motor_desired->br * motor_desired->br
+                 + B_COEFF * motor_desired->br);
 
     /* Safe division */
-    u_esc->w_fl = safe_divf(u_fl, Vbat, VBAT_MIN);
-    u_esc->w_fr = safe_divf(u_fr, Vbat, VBAT_MIN);
-    u_esc->w_bl = safe_divf(u_bl, Vbat, VBAT_MIN);
-    u_esc->w_br = safe_divf(u_br, Vbat, VBAT_MIN);
+    u_esc->fl = safe_divf(u_fl, Vbat, VBAT_MIN);
+    u_esc->fr = safe_divf(u_fr, Vbat, VBAT_MIN);
+    u_esc->bl = safe_divf(u_bl, Vbat, VBAT_MIN);
+    u_esc->br = safe_divf(u_br, Vbat, VBAT_MIN);
 
 }
 
@@ -590,10 +784,10 @@ void ESC_Output(MotorCommand_t *u_esc) {
 
     // Clamp duty về [0,1]
     // Bảo vệ ESC và tránh overflow PWM
-    float u_fl = clamp(u_esc->w_fl);
-    float u_fr = clamp(u_esc->w_fr);
-    float u_bl = clamp(u_esc->w_bl);
-    float u_br = clamp(u_esc->w_br);
+    float u_fl = clamp(u_esc->fl);
+    float u_fr = clamp(u_esc->fr);
+    float u_bl = clamp(u_esc->bl);
+    float u_br = clamp(u_esc->br);
 
     // Mapping duty (0-1) sang giá trị CCR PWM
     uint16_t ccr_fl = (uint16_t)(u_fl * (CCR_MAX - CCR_MIN) + CCR_MIN);
@@ -607,10 +801,45 @@ void ESC_Output(MotorCommand_t *u_esc) {
 
 void Controller_Rate_Loop(RateController_t *rctrl, DroneState_t *state, Torque_t *torque_pid, RateSetpoint_t *rate_sp) {
     
-    torque_pid->tau_x = PID_Update(&rctrl->p, rate_sp->p , state->omega_body.x,1.0f/RATE_LOOP_HZ);
-    torque_pid->tau_y = PID_Update(&rctrl->q, rate_sp->q , state->omega_body.y,1.0f/RATE_LOOP_HZ);
-    torque_pid->tau_z = PID_Update(&rctrl->r, rate_sp->r , state->omega_body.z,1.0f/RATE_LOOP_HZ);
+    torque_pid->tau_x = PID_Update(&rctrl->p, rate_sp->p, state->omega_body.x,
+                                   1.0f / RATE_LOOP_HZ, 0U);
+    torque_pid->tau_y = PID_Update(&rctrl->q, rate_sp->q, state->omega_body.y,
+                                   1.0f / RATE_LOOP_HZ, 0U);
+    torque_pid->tau_z = PID_Update(&rctrl->r, rate_sp->r, state->omega_body.z,
+                                   1.0f / RATE_LOOP_HZ, 0U);
 
+}
 
-    
+void Controller_Angle_Loop(AngleController_t *actrl,DroneState_t *state,
+                    AngleSetpoint_t *angle_sp,RateSetpoint_t *rate_sp){
+    float dt = 1.0f / ANGLE_LOOP_HZ;
+
+    float err_roll  = angle_sp->roll  - state->euler.x;
+    float err_pitch = angle_sp->pitch - state->euler.y;
+
+    const float DB = 0.0f*M_PI/180.0f;  // Deadband of 0.3 degrees in radians
+
+    // ===== ROLL =====
+    if (fabsf(err_roll) > DB)
+    {
+        rate_sp->p = PID_Update(&actrl->roll, angle_sp->roll, state->euler.x,
+                                dt, 1U);
+    }
+    else
+    {
+        rate_sp->p = 0.0f;
+        actrl->roll.integrator = 0.0f;
+    }
+
+    // ===== PITCH =====
+    if (fabsf(err_pitch) > DB)
+    {
+        rate_sp->q = PID_Update(&actrl->pitch, angle_sp->pitch, state->euler.y,
+                                dt, 1U);
+    }
+    else
+    {
+        rate_sp->q = 0.0f;
+        actrl->pitch.integrator = 0.0f;
+    }
 }

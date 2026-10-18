@@ -72,6 +72,7 @@ typedef struct {
 #define BMP388_ADDRESS                  (0x76 << 1)
 
 /* Register Map */
+#define BMP388_REG_CHIP_ID              0x00
 #define BMP388_REG_DATA                 0x04
 #define BMP388_REG_IF_CONF              0x1A
 #define BMP388_REG_PWR_CTRL             0x1B
@@ -240,4 +241,5 @@ HAL_StatusTypeDef IMU_ReadScheduled(IMU_Data_t *imu_data, uint8_t read_accel, ui
 void bmp388_init(void);
 void Read_Barometer(Baro_Data_t *baro);
 void IMU_Init(void);
+HAL_StatusTypeDef IMU_Reinitialize(IMU_Data_t *imu_data);
 #endif /* DRIVERS_SENSOR_IMU_H_ */

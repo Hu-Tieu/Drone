@@ -2,6 +2,7 @@
 #define DRIVERS_SENSOR_ADC_H_
 
 #include <stdint.h>
+#include "stm32f4xx_hal.h"
 
 /* ================= CONFIG ================= */
 
@@ -14,6 +15,7 @@
 /* ================= API ================= */
 
 void ADC_Init(void);
+HAL_StatusTypeDef ADC_Reinitialize(void);
 void ADC_GetVbat(float *vbat, uint8_t channel);
 
 #endif /* DRIVERS_SENSOR_ADC_H_ */

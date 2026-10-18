@@ -38,6 +38,7 @@
 #include "PWM/PWM.h"
 #include "RF24/rf24.h"
 #include "TOF/tof.h"
+#include "TOF/custom_ranging_sensor.h"
 #include "Battery/battery.h"
 #include "Receiver/receiver.h"
 /* USER CODE END Includes */
@@ -73,6 +74,55 @@ int _write(int file, char *ptr, int len);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 ControlSystem_t sys = {0} ;
+
+static void reset_sensor_and_control_state(void)
+{
+  HAL_StatusTypeDef imu_status;
+  HAL_StatusTypeDef adc_status;
+  int32_t tof_status = BSP_ERROR_NONE;
+
+  Scheduler_ForceSafetyMode(0U);
+  ESC_Force(&sys.signals.u_esc);
+  ESC_Output(&sys.signals.u_esc);
+
+  if (HAL_TIM_Base_Stop_IT(&htim6) != HAL_OK)
+  {
+    printf("[RESET] Failed to stop scheduler timer\r\n");
+    return;
+  }
+
+  memset(&sys, 0, sizeof(sys));
+  ESC_Force(&sys.signals.u_esc);
+  ESC_Output(&sys.signals.u_esc);
+
+  imu_status = IMU_Reinitialize(&sys.sensor.imu);
+  adc_status = ADC_Reinitialize();
+  if (tof_enabled)
+    tof_status = TOF_Reinitialize();
+  rpm_last_capture = HAL_GetTick();
+
+  if (imu_status == HAL_OK)
+    Controller_Init(&sys);
+
+  Scheduler_ForceSafetyMode((imu_status == HAL_OK) &&
+                            (adc_status == HAL_OK) &&
+                            (tof_status == BSP_ERROR_NONE));
+  NRF24_BindControlSystem(&sys);
+
+  if (imu_status != HAL_OK)
+    printf("[RESET] IMU reinitialization failed: %d\r\n", (int)imu_status);
+  if (adc_status != HAL_OK)
+    printf("[RESET] ADC reinitialization failed: %d\r\n", (int)adc_status);
+  if (tof_status != BSP_ERROR_NONE)
+    printf("[RESET] ToF reinitialization failed: %ld\r\n", (long)tof_status);
+
+  __disable_irq();
+  g_flag.system = 0U;
+  __enable_irq();
+
+  if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK)
+    printf("[RESET] Failed to restart scheduler timer\r\n");
+}
 /* USER CODE END 0 */
 
 /**
@@ -148,6 +198,13 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     pending_flags |= g_flag.system;
     g_flag.system &= ~pending_flags;
     __enable_irq();
+
+    if ((pending_flags & FLAG_SENSOR_RESET) != 0U)
+    {
+      pending_flags = 0U;
+      reset_sensor_and_control_state();
+      continue;
+    }
 
     if (pending_flags == 0U) {
       goto MAIN_LOOP_REPORT;

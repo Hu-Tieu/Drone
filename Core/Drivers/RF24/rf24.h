@@ -97,9 +97,17 @@ typedef enum
 typedef enum
 {
     RX_PID_RATE_ANGLE_ID = 0x1001,
-    RX_PID_POS_VEL_ID    = 0x1002
+    RX_PID_POS_VEL_ID    = 0x1002,
+    RX_SETTING_CMD_ID    = 0x2001
 
 } RxPidPacketID_t;
+
+typedef enum
+{
+    SETTING_CMD_RESET_ANGLE = 0x0001,
+    SETTING_CMD_RESET_RATE  = 0x0002,
+    SETTING_CMD_RESET_SENSORS = 0x0003
+} SettingCommand_t;
 
 typedef enum
 {
@@ -137,6 +145,14 @@ typedef struct __attribute__((packed))
     int16_t velocity[3][3];
 
 } RxPidPosVel_t;
+
+typedef struct __attribute__((packed))
+{
+    uint16_t id;
+    uint32_t sequence;
+    uint16_t command;
+    int16_t value;
+} RxSettingCmd_t;
 
 typedef struct
 {
@@ -193,9 +209,9 @@ typedef struct __attribute__((packed))
     int16_t imu_m_y;
     int16_t imu_m_z;
 
-    int16_t accel_world_x;
-    int16_t accel_world_y;
-    int16_t accel_world_z;
+    int16_t accel_body_x;
+    int16_t accel_body_y;
+    int16_t accel_body_z;
 
     int16_t w_fr;
 
@@ -231,8 +247,8 @@ typedef struct __attribute__((packed))
     int16_t tau_y;
     int16_t tau_z;
 
-    int16_t w_bl;
-    int16_t w_br;
+    int16_t euler_offset_x;
+    int16_t euler_offset_y;
 
     uint8_t reserved;
 
@@ -260,6 +276,7 @@ _Static_assert(sizeof(Packet3_t) == 32, "Packet3 size error");
 _Static_assert(sizeof(TelemetryFrame96_t) == 96, "Frame size error");
 _Static_assert(sizeof(RxPidRateAngle_t) == 42, "RxPidRateAngle size error");
 _Static_assert(sizeof(RxPidPosVel_t) == 42, "RxPidPosVel size error");
+_Static_assert(sizeof(RxSettingCmd_t) == 10, "RxSettingCmd size error");
 
 /* =========================================================
  * RF24 API

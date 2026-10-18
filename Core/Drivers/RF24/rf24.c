@@ -1,11 +1,8 @@
 #include "main.h"
 #include "rf24.h"
+#include "controller_scheduler.h"
 #include <string.h>
-#include "stdio.h"
 extern SPI_HandleTypeDef hspi1;
-
-
-
 
 static ControlSystem_t *g_rf24_sys = NULL;
 static PidRxAssembler_t g_pid_rx = {0};
@@ -15,7 +12,11 @@ static uint16_t g_last_pid_seq16 = 0;
 uint8_t sending = 0;
 uint16_t sequence = 0;
 
+#define RF24_TX_STUCK_TIMEOUT_MS   500U
 
+uint8_t readReg(uint8_t reg);
+
+static uint32_t g_rf24_tx_started_at_ms = 0U;
 
 /* =========================================================
    SPI TRANSFER
@@ -23,9 +24,9 @@ uint16_t sequence = 0;
 
 static uint8_t spi(uint8_t data)
 {
-    uint8_t rx;
+    uint8_t rx = 0xFFU;
 
-    HAL_SPI_TransmitReceive(&hspi1,&data,&rx,1,HAL_MAX_DELAY);
+    (void)HAL_SPI_TransmitReceive(&hspi1, &data, &rx, 1, 10U);
 
     return rx;
 }
@@ -36,14 +37,14 @@ static uint8_t spi(uint8_t data)
 uint8_t readReg(uint8_t reg)
 {
     uint8_t tx[2];
-    uint8_t rx[2];
+    uint8_t rx[2] = {0xFFU, 0xFFU};
 
     tx[0] = 0x00 | (reg & 0x1F);
     tx[1] = 0xFF;
 
     RF24_CSN_LOW();
 
-    HAL_SPI_TransmitReceive(&hspi1, tx, rx, 2, 10);
+    (void)HAL_SPI_TransmitReceive(&hspi1, tx, rx, 2, 10U);
 
     RF24_CSN_HIGH();
 
@@ -65,7 +66,7 @@ static void writeBuf(uint8_t reg,uint8_t *buf,uint8_t len)
 
     spi(CMD_W_REGISTER | reg);
 
-    HAL_SPI_Transmit(&hspi1,buf,len,HAL_MAX_DELAY);
+    (void)HAL_SPI_Transmit(&hspi1, buf, len, 10U);
 
     RF24_CSN_HIGH();
 }
@@ -79,7 +80,7 @@ static void readPayload(uint8_t *buf,uint8_t len)
 
     spi(CMD_R_RX_PAYLOAD);
 
-    HAL_SPI_Receive(&hspi1,buf,len,HAL_MAX_DELAY);
+    (void)HAL_SPI_Receive(&hspi1, buf, len, 10U);
 
     RF24_CSN_HIGH();
 }
@@ -89,7 +90,7 @@ static void writePayload(uint8_t *buf,uint8_t len)
 
     spi(CMD_W_TX_PAYLOAD);
 
-    HAL_SPI_Transmit(&hspi1,buf,len,HAL_MAX_DELAY);
+    (void)HAL_SPI_Transmit(&hspi1, buf, len, 10U);
 
     RF24_CSN_HIGH();
 }
@@ -179,6 +180,7 @@ void NRF24_Init(void)
     HAL_Delay(5);
 
     flushTX();
+
 }
 void delay_us(uint32_t us)
 {
@@ -186,16 +188,6 @@ void delay_us(uint32_t us)
     uint32_t ticks = us * (SystemCoreClock / 1000000);
 
     while ((DWT->CYCCNT - start) < ticks);
-}
-uint8_t rf24_get_status(void)
-{
-    uint8_t status;
-
-    RF24_CSN_LOW();
-    status = spi(CMD_NOP);
-    RF24_CSN_HIGH();
-
-    return status;
 }
 /* =========================================================
    SEND
@@ -275,6 +267,38 @@ bool NRF24_ApplyPidConfig(ControlSystem_t *sys, const uint8_t *payload, uint16_t
         return true;
     }
 
+    if ((id == RX_SETTING_CMD_ID) && (length == sizeof(RxSettingCmd_t)))
+    {
+        RxSettingCmd_t pkt;
+        memcpy(&pkt, payload, sizeof(pkt));
+
+        if (pkt.command == SETTING_CMD_RESET_ANGLE)
+        {
+            Controller_RequestAngleReset(sys);
+            g_last_pid_code = 3;
+            g_last_pid_seq16 = (uint16_t)(pkt.sequence & 0xFFFFu);
+            return true;
+        }
+
+        if (pkt.command == SETTING_CMD_RESET_RATE)
+        {
+            Controller_RequestRateReset(sys);
+            g_last_pid_code = 4;
+            g_last_pid_seq16 = (uint16_t)(pkt.sequence & 0xFFFFu);
+            return true;
+        }
+
+        if (pkt.command == SETTING_CMD_RESET_SENSORS)
+        {
+            Scheduler_RequestSensorReset();
+            g_last_pid_code = 5;
+            g_last_pid_seq16 = (uint16_t)(pkt.sequence & 0xFFFFu);
+            return true;
+        }
+
+        return false;
+    }
+
     return false;
 }
 
@@ -288,6 +312,11 @@ static uint16_t pidExpectedLengthFromId(uint16_t id)
     if (id == RX_PID_POS_VEL_ID)
     {
         return sizeof(RxPidPosVel_t);
+    }
+
+    if (id == RX_SETTING_CMD_ID)
+    {
+        return sizeof(RxSettingCmd_t);
     }
 
     return 0;
@@ -312,22 +341,20 @@ static bool pidAssemblerPush(const uint8_t *payload, uint8_t len, uint8_t *out_b
     {
         uint16_t id = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
         uint16_t expected = pidExpectedLengthFromId(id);
+        uint16_t copy_len;
 
         if (expected == 0)
         {
             return false;
         }
 
-        if (len > expected)
-        {
-            return false;
-        }
+        copy_len = (len > expected) ? expected : len;
 
         g_pid_rx.active = 1;
         g_pid_rx.id = id;
         g_pid_rx.expected_len = expected;
-        g_pid_rx.received_len = len;
-        memcpy(g_pid_rx.buffer, payload, len);
+        g_pid_rx.received_len = copy_len;
+        memcpy(g_pid_rx.buffer, payload, copy_len);
 
         if (g_pid_rx.received_len == g_pid_rx.expected_len)
         {
@@ -345,14 +372,13 @@ static bool pidAssemblerPush(const uint8_t *payload, uint8_t len, uint8_t *out_b
         return false;
     }
 
-    if ((uint16_t)g_pid_rx.received_len + len > g_pid_rx.expected_len)
     {
-        pidAssemblerReset();
-        return false;
-    }
+        uint16_t remaining = (uint16_t)(g_pid_rx.expected_len - g_pid_rx.received_len);
+        uint16_t copy_len = (len > remaining) ? remaining : len;
 
-    memcpy(&g_pid_rx.buffer[g_pid_rx.received_len], payload, len);
-    g_pid_rx.received_len += len;
+        memcpy(&g_pid_rx.buffer[g_pid_rx.received_len], payload, copy_len);
+        g_pid_rx.received_len += copy_len;
+    }
 
     if (g_pid_rx.received_len == g_pid_rx.expected_len)
     {
@@ -372,14 +398,14 @@ static void buildTestFrame(TelemetryFrame96_t *frame, uint16_t seq)
     frame->p1.id = 1;
     frame->p1.sequence = seq;
     frame->p1.thrust_sp = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.thrust_sp : 0.0f, 100.0f);
-    frame->p1.u_esc_fl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.w_fl : 0.0f, 1000.0f);
-    frame->p1.u_esc_fr = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.w_fr : 0.0f, 1000.0f);
-    frame->p1.u_esc_bl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.w_bl : 0.0f, 1000.0f);
-    frame->p1.u_esc_br = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.w_br : 0.0f, 1000.0f);
+    frame->p1.u_esc_fl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.fl : 0.0f, 1000.0f);
+    frame->p1.u_esc_fr = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.fr : 0.0f, 1000.0f);
+    frame->p1.u_esc_bl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.bl : 0.0f, 1000.0f);
+    frame->p1.u_esc_br = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.u_esc.br : 0.0f, 1000.0f);
     frame->p1.omega_body_x = g_rf24_sys ? g_rf24_sys->state.omega_body.x : 0.0f;
     frame->p1.omega_body_y = g_rf24_sys ? g_rf24_sys->state.omega_body.y : 0.0f;
     frame->p1.omega_body_z = g_rf24_sys ? g_rf24_sys->state.omega_body.z : 0.0f;
-    frame->p1.w_fl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.motor_desired.w_fl : 0.0f, 1.0f);
+    frame->p1.w_fl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.motor_desired.fl : 0.0f, 1.0f);
     frame->p1.battery = g_rf24_sys ? g_rf24_sys->sensor.battery : 0.0f;
     frame->p1.reserved = (uint8_t)(0xA0u | (g_last_pid_code & 0x0Fu));
 
@@ -393,10 +419,10 @@ static void buildTestFrame(TelemetryFrame96_t *frame, uint16_t seq)
     frame->p2.imu_m_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.mag.x : 0.0f, 100.0f);
     frame->p2.imu_m_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.mag.y : 0.0f, 100.0f);
     frame->p2.imu_m_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.mag.z : 0.0f, 100.0f);
-    frame->p2.accel_world_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.x : 0.0f, 100.0f);
-    frame->p2.accel_world_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.y : 0.0f, 100.0f);
-    frame->p2.accel_world_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_world.z : 0.0f, 100.0f);
-    frame->p2.w_fr = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.motor_desired.w_fr : 0.0f, 1.0f);
+    frame->p2.accel_body_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_body.x : 0.0f, 100.0f);
+    frame->p2.accel_body_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_body.y : 0.0f, 100.0f);
+    frame->p2.accel_body_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.accel_body.z : 0.0f, 100.0f);
+    frame->p2.w_fr = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.motor_desired.fr : 0.0f, 1.0f);
     frame->p2.baro_pressure = g_rf24_sys ? g_rf24_sys->state.baro_altitude : 0.0f;
     frame->p2.reserved = (uint8_t)(g_last_pid_seq16 & 0xFFu);
 
@@ -414,14 +440,33 @@ static void buildTestFrame(TelemetryFrame96_t *frame, uint16_t seq)
     frame->p3.tau_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.torque_pid.tau_x : 0.0f, 100.0f);
     frame->p3.tau_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.torque_pid.tau_y : 0.0f, 100.0f);
     frame->p3.tau_z = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.torque_pid.tau_z : 0.0f, 100.0f);
-    frame->p3.w_bl = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.motor_desired.w_bl : 0.0f, 1.0f);
-    frame->p3.w_br = f32_to_i16(g_rf24_sys ? g_rf24_sys->signals.motor_desired.w_br : 0.0f, 1.0f);
+    frame->p3.euler_offset_x = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.euler_offset.x : 0.0f, 100.0f);
+    frame->p3.euler_offset_y = f32_to_i16(g_rf24_sys ? g_rf24_sys->state.euler_offset.y : 0.0f, 100.0f);
     frame->p3.reserved = (uint8_t)((g_last_pid_seq16 >> 8) & 0xFFu);
 }
 
 void NRF24_Send(void)
 {
-    if (sending) { return; }
+    if (sending)
+    {
+        /* Poll TX completion as a fallback in case the EXTI flag was missed. */
+        NRF24_IRQHandler();
+    }
+
+    if (sending)
+    {
+        if ((HAL_GetTick() - g_rf24_tx_started_at_ms) >= RF24_TX_STUCK_TIMEOUT_MS)
+        {
+            RF24_CE_LOW();
+            flushTX();
+            writeReg(REG_STATUS, STATUS_RX_DR | STATUS_TX_DS | STATUS_MAX_RT);
+            sending = 0U;
+        }
+        else
+        {
+            return;
+        }
+    }
 
     TelemetryFrame96_t frame;
     buildTestFrame(&frame, sequence++);
@@ -437,10 +482,9 @@ void NRF24_Send(void)
         writePayload(&msg[p * 32], 32);
     }
 
+    g_rf24_tx_started_at_ms = HAL_GetTick();
     sending = 1;
     RF24_CE_HIGH();
-
-
 }
 
 void NRF24_IRQHandler(void)

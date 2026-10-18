@@ -88,6 +88,11 @@ void Scheduler_SetFlagFromISR(system_flag_t flag)
     Scheduler_SetFlagWithTimestamp(flag);
 }
 
+void Scheduler_RequestSensorReset(void)
+{
+    Scheduler_SetFlagWithTimestamp(FLAG_SENSOR_RESET);
+}
+
 /* Scheduler_SelectHighestPriority removed (unused) */
 /* ================= SCHEDULER ================= */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -137,6 +142,19 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 
 /* ================= RF24 AND VL53CX FLAGS ================= */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
+    static uint32_t last_button_press_ms = 0U;
+    static uint8_t button_seen = 0U;
+
+    if (GPIO_Pin == USER_BUTTON_Pin)
+    {
+        uint32_t now = HAL_GetTick();
+        if ((button_seen == 0U) || ((now - last_button_press_ms) >= 200U))
+        {
+            last_button_press_ms = now;
+            button_seen = 1U;
+            Scheduler_SetFlagWithTimestamp(FLAG_SENSOR_RESET);
+        }
+    }
     if(GPIO_Pin == RF24_IRQ_Pin){
                 Scheduler_SetFlagWithTimestamp(FLAG_RF24_IRQ);
     }

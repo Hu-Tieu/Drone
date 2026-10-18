@@ -97,6 +97,9 @@ void Error_Handler(void);
 #define RF24_IRQ_Pin GPIO_PIN_8
 #define RF24_IRQ_GPIO_Port GPIOB
 #define RF24_IRQ_EXTI_IRQn EXTI9_5_IRQn
+#define USER_BUTTON_Pin GPIO_PIN_13
+#define USER_BUTTON_GPIO_Port GPIOC
+#define USER_BUTTON_EXTI_IRQn EXTI15_10_IRQn
 #define MOTOR_2_Pin GPIO_PIN_9
 #define MOTOR_2_GPIO_Port GPIOB
 

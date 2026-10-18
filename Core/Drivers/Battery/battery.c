@@ -2,6 +2,7 @@
 #include "battery.h"
 #include "tim.h"
 #include "stm32f4xx_hal.h"
+#include <string.h>
 
 static uint16_t adc_buffer[ADC_BUFFER_LENGTH];
 static float vbat_filtered = 0.0f;
@@ -12,6 +13,28 @@ void ADC_Init(void)
 {
     HAL_TIM_Base_Start(&htim8);
     HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, ADC_BUFFER_LENGTH);
+}
+
+HAL_StatusTypeDef ADC_Reinitialize(void)
+{
+    HAL_StatusTypeDef status;
+
+    status = HAL_TIM_Base_Stop(&htim8);
+    if (status != HAL_OK)
+        return status;
+
+    status = HAL_ADC_Stop_DMA(&hadc1);
+    if (status != HAL_OK)
+        return status;
+
+    memset(adc_buffer, 0, sizeof(adc_buffer));
+    vbat_filtered = 0.0f;
+
+    status = HAL_TIM_Base_Start(&htim8);
+    if (status != HAL_OK)
+        return status;
+
+    return HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, ADC_BUFFER_LENGTH);
 }
 
 /* ================= PROCESS ================= */

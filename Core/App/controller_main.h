@@ -4,6 +4,7 @@
 #include <math.h>
 #include "IMU/imu.h"
 #include "Receiver/receiver.h"
+#include "system_mode.h"
 /* =========================================================
  * Quadcopter Physical Parameters
  * ========================================================= */
@@ -25,7 +26,7 @@
 #define KF                      1.05e-5f    // N / (rad/s)^2
 
 /* Drag torque model: Tau_z = KM * omega^2 */
-#define KM                      1.0e-7f     // N·m / (rad/s)^2
+#define KM                      1.05e-7f     // N·m / (rad/s)^2
 
 /* ================= Motor Characteristics ================= */
 #define MOTOR_COUNT             4
@@ -34,7 +35,7 @@
 
 /* ================= Motor Speed Limits ================= */
 #define W_MIN                   0.0f        // rad/s
-#define W_MAX                   900.0f      // rad/s (adjust to your motor)
+#define W_MAX                   1200.0f      // rad/s (adjust to your motor)
 
 /* ================= PWM / Duty Limits ================= */
 #define DUTY_MIN                0.0f
@@ -165,6 +166,9 @@ typedef struct {
 
     float integrator;
     float prev_error;
+    float prev_measurement;
+    float filtered_derivative;
+    uint8_t derivative_initialized;
 
     float out_min;
     float out_max;
@@ -181,9 +185,9 @@ typedef struct {
 } AngleSetpoint_t;
 
 typedef struct {
-    float p;
-    float q;
-    float r;
+    float p;  // [rad/s]
+    float q;  // [rad/s]
+    float r;  // [rad/s]
 } RateSetpoint_t;
 
 typedef struct {
@@ -205,10 +209,10 @@ typedef struct {
 } Torque_t;
 
 typedef struct {
-    float w_fl;
-    float w_fr;
-    float w_bl;
-    float w_br;
+    float fl;
+    float fr;
+    float bl;
+    float br;
 } MotorCommand_t;
 
 /* ============================================================
@@ -287,14 +291,16 @@ typedef struct
      * ORIENTATION
      * ========================= */
 
-    Vec3f_t euler;          // [deg]  roll (φ), pitch (θ), yaw (ψ)
+    Vec3f_t euler;          // [rad]  roll (φ), pitch (θ), yaw (ψ)
+    Vec3f_t euler_offset;   // [rad]  offset added after complementary filter
 
     /* =========================
      * ANGULAR MOTION
      * ========================= */
 
-    Vec3f_t omega_body;     // [deg/s] body rates (p, q, r)
-    Vec3f_t omega_world;    // [deg/s] euler angle rates (φ̇, θ̇, ψ̇)
+    Vec3f_t omega_body;     // [rad/s] body rates (p, q, r)
+    Vec3f_t rate_offset;    // [rad/s] gyro rate bias removed from omega_body
+    Vec3f_t omega_world;    // [rad/s] euler angle rates (φ̇, θ̇, ψ̇)
 
     /* =========================
      * TRANSLATIONAL MOTION
@@ -330,11 +336,23 @@ typedef struct
     float total_thrust;     // [N] total thrust produced by motors
 
 } DroneState_t;
+
+typedef struct {
+    uint8_t angle_active;
+    uint8_t rate_active;
+    uint16_t angle_count;
+    uint16_t rate_count;
+    float angle_sum_x;
+    float angle_sum_y;
+    float rate_sum_p;
+    float rate_sum_q;
+    float rate_sum_r;
+} ResetCalibration_t;
 /* ============================================================
  *                      MAIN CONTROL SYSTEM
  * ============================================================ */
 
-typedef struct {
+typedef struct ControlSystem_t {
 
     /* === Raw sensor input === */
     DroneSensor_t sensor;
@@ -361,6 +379,9 @@ typedef struct {
     /* === Control signals === */
     ControlSignals_t signals;
 
+    /* === Runtime reset/calibration state === */
+    ResetCalibration_t reset_calib;
+
 } ControlSystem_t;
 
 /* ============================================================
@@ -374,7 +395,7 @@ void Accel_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *e
 void Mag_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, MagLPF_t *mag_lpf);
 void Barometer_LPF(DroneSensor_t *sensor,DroneState_t *state, AttitudeEstimator_t *estimator, FirstOrderLPF_t *baro_lpf);
 /* --- Sensor --- */
-void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals);
+void Receiver_Mapping(DroneSensor_t *sensor, ControlSignals_t *signals, SystemMode_t mode);
 void ESC_Force(MotorCommand_t *u_esc);
 /* --- Estimator --- */
 void Estimator_Angle(DroneState_t *state, AttitudeEstimator_t *estimator,uint8_t TYPE);
@@ -384,9 +405,13 @@ void Motor_Inverse_Model(MotorCommand_t *motor_desired,MotorCommand_t *u_esc,flo
 void Motor_Mixer(Torque_t *torque_total, float thrust_sp, MotorCommand_t *motor_desired);
 void Rate_PID_Reset(RateController_t *rctrl);
 void Angle_PID_Reset(AngleController_t *actrl);
+void Torque_PID_Reset(Torque_t *torque_pid);
+void Controller_RequestAngleReset(ControlSystem_t *sys);
+void Controller_RequestRateReset(ControlSystem_t *sys);
+void Controller_ProcessResetCalibration(ControlSystem_t *sys);
 /* --- Control Loops --- */
 void Controller_Rate_Loop(RateController_t *rctrl, DroneState_t *state, Torque_t *torque_pid, RateSetpoint_t *rate_sp);
-void Controller_Angle_Loop(ControlSystem_t *sys);
+void Controller_Angle_Loop(AngleController_t *actrl, DroneState_t *state, AngleSetpoint_t *angle_sp,RateSetpoint_t *rate_sp);
 void Controller_Mixer(ControlSystem_t *sys);
 
 #endif
